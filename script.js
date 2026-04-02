@@ -254,8 +254,8 @@ const APP = (() => {
     panel.innerHTML = `
       <div class="focus-content">
         <div class="focus-meta">
-          <span class="meta-tag">${escHtml(okr.title)}</span>
-          <span class="urgency-tag ${uCls}">${urgencyLabel(days)}</span>
+          <span class="meta-tag" id="focus-okr">OKR:${escHtml(okr.title)}</span>
+          <span class="urgency-tag ${uCls}" id="focus-urgency">${urgencyLabel(days)}</span>
         </div>
         <h1 class="focus-title">${escHtml(kpi.title)}</h1>
         <div class="focus-progress">

@@ -350,7 +350,8 @@ ul, ol { list-style: none; }
   gap: 12px;
   flex-wrap: wrap;
 }
-
+#focus-okr {height: 22px;}
+#focus-urgency {box-shadow: 0 0 0 2px var(--accent-glow);}
 .meta-tag {
   font-family: var(--font-mono);
   font-size: 10px;
