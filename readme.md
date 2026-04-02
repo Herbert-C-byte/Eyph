@@ -1,188 +1,55 @@
 # EYPH — Earn Your Phase
 
-A minimal execution system to track **OKRs, KPIs, Tasks, and Focused Hours**.
+A focused OKR and KPI execution tracker built for high-output learning sprints.
+No dashboards. No bloat. One target locked, one metric moving, one phase at a time.
 
-Built for speed, discipline, and daily usage.
+## What it does
 
----
+EYPH organizes your goals into three layers:
 
-## Purpose
+- **OKRs** — objectives with deadlines. The destination.
+- **KPIs** — measurable results attached to each OKR. Hours targets or task lists.
+- **Tasks** — the specific actions that move a KPI forward.
 
-EYPH is not a productivity tool.
+The focus panel locks one KPI at a time so your attention never splits.
+Deadline urgency is surfaced automatically — warnings at 3 days, overdue pulse animation past deadline.
 
-It is a **personal execution system** designed to:
+## Stack
 
-* Track meaningful progress (not activity)
-* Enforce accountability through measurable KPIs
-* Connect time spent → real outcomes
-* Eliminate ambiguity in daily work
+- Vanilla HTML, CSS, JavaScript — zero dependencies, zero build step
+- localStorage for persistence (local dev)
+- Single-file architecture: `index.html`, `style.css`, `script.js`
 
----
+## Running locally
+```bash
+git clone https://github.com/YOUR_USERNAME/eyph.git
+cd eyph
+# Open index.html in any browser — no server required
+open index.html
+```
 
-## Core Structure
-
-### 1. OKRs (Objectives)
-
-High-level goals with deadlines.
-
-Example:
-
-* Become proficient in JavaScript within 30 days
-
----
-
-### 2. KPIs (Key Performance Indicators)
-
-Measurable indicators tied to each OKR.
-
-Each KPI includes:
-
-* Target value (e.g., 40 hours, 20 tasks)
-* Unit (hours / tasks)
-* Deadline
-
-Example:
-
-* 40 hours of deep work
-* Build 5 features
-
----
-
-### 3. Tasks
-
-Execution units linked to KPIs.
-
-Example:
-
-* Build authentication system
-* Practice closures in JavaScript
-
----
-
-### 4. Logs (Time Tracking)
-
-Records of focused work sessions.
-
-Each log includes:
-
-* KPI reference
-* Hours spent
-* Date
-
----
-
-## Features (MVP)
-
-* Create OKRs with deadlines
-* Add KPIs to each OKR
-* Add tasks to KPIs
-* Log focused hours per KPI
-* Local storage persistence (no backend)
-* Minimal interface for fast usage
-
----
-
-## Tech Stack
-
-* HTML
-* CSS
-* JavaScript (Vanilla)
-* LocalStorage (for persistence)
-
----
-
-## Project Structure
-
+## Project structure
 ```
 eyph/
- ├── index.html
- ├── style.css
- └── app.js
+├── index.html   — markup and modal structure
+├── style.css    — cyberpunk design system, CSS variables, responsive layout
+└── script.js    — APP module: state, persistence, CRUD, render, events
 ```
 
----
+## How to use
 
-## How to Run
+1. Click **+ OKR** to create an objective with a deadline
+2. Click **+ KPI** to add a measurable result — choose Hours or Tasks type
+3. Click any KPI in the sidebar to lock it as your active focus
+4. Log hours or check off tasks in the focus panel
+5. Use **⚡ CHANGE FOCUS** to switch between active KPIs
 
-1. Clone or download the project
-2. Open `index.html` in your browser
-3. Start creating:
+## Design principles
 
-   * OKRs
-   * KPIs
-   * Tasks
-4. Log your focused hours daily
+- One focus at a time — the panel shows only the active KPI
+- Every phase ends with a shipped artifact, not a finished course
+- Urgency is automatic — deadlines surface warnings without manual review
 
----
+## License
 
-## Usage Workflow
-
-Daily:
-
-1. Open EYPH
-2. Review OKRs and KPIs
-3. Select a KPI
-4. Log hours after each work session
-5. Add/complete tasks
-
-Weekly:
-
-1. Review KPI progress
-2. Adjust tasks if necessary
-3. Evaluate execution vs targets
-
----
-
-## Rules of Use
-
-* No fake logging — hours must reflect real work
-* KPIs must be measurable
-* Tasks must be actionable
-* Deadlines are non-negotiable
-* System must be used daily
-
----
-
-## Philosophy
-
-* Objectives define direction
-* KPIs define reality
-* Tasks define execution
-* Time defines discipline
-
-If time is not tracked, progress is assumed.
-If progress is assumed, failure is hidden.
-
----
-
-## Roadmap (Next Iterations)
-
-* KPI progress bars
-* Daily dashboard
-* Deadline warnings
-* Task completion tracking (UI)
-* Mobile optimization
-* Notifications/reminders
-* Backend + authentication (future)
-
----
-
-## Name
-
-**EYPH — Earn Your Phase**
-
-Meaning:
-You don’t move forward by intention.
-You move forward by earned progress.
-
----
-
-## Final Note
-
-This system only works if used consistently.
-
-No consistency → no data
-No data → no awareness
-No awareness → no growth
-
-Execution is the only metric that matters.
+MIT
