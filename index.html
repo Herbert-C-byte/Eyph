@@ -42,7 +42,18 @@
         <button class="btn btn-ghost btn-sm" id="btn-open-focus-modal">⚡ CHANGE FOCUS</button>
       </div>
       <div class="sidebar-list" id="okr-list" role="list"></div>
+ 
+      <!-- Completed OKRs archive -->
+      <div class="sidebar-completed" id="sidebar-completed" hidden>
+        <button class="completed-toggle" id="btn-toggle-completed" aria-expanded="false">
+          <span class="completed-toggle-label">◉ COMPLETED</span>
+          <span class="completed-count" id="completed-count">0</span>
+          <span class="completed-chevron" id="completed-chevron">▸</span>
+        </button>
+        <div class="completed-list" id="completed-list" hidden></div>
+      </div>
     </aside>
+ 
     <section class="focus-panel" id="focus-panel" aria-label="Active KPI focus panel"></section>
   </main>
  
@@ -138,7 +149,7 @@
     </div>
   </div>
  
-  <!-- Add Task (now with description) -->
+  <!-- Add Task -->
   <div class="modal-overlay" id="modal-task" role="dialog" aria-modal="true" aria-labelledby="modal-task-title" hidden>
     <div class="modal-box">
       <div class="modal-header">
