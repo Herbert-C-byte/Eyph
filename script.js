@@ -1,14 +1,13 @@
 /* ═══════════════════════════════════════════════
-   EYPH — Earn Your Phase  |  script.js
-   v3: + OKR progress rings · inline rename · JSON export
-   Sections: CONFIG · DB · STATE · UTILS · RENDER · EVENTS · CRUD · INIT
+   EYPH — Earn Your Phase  |  script.js  v4
+   + Dashboard · OKR charts · Task descriptions · View toggle
 ═══════════════════════════════════════════════ */
-
+ 
 const APP = (() => {
   'use strict';
-
+ 
   /* ══════════════════════════════════════════════
-     SUPABASE CONFIG
+     CONFIG
   ══════════════════════════════════════════════ */
   const SUPABASE_URL = 'https://uzbdwuorvivmvradsnlz.supabase.co';
   const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6YmR3dW9ydml2bXZyYWRzbmx6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyNTQ1NTEsImV4cCI6MjA5MDgzMDU1MX0.yseg5uKtSqQrc4Pf76hzb_Zw2KFjWguWlJ1HKAg2huo';
@@ -18,36 +17,25 @@ const APP = (() => {
     'Authorization': `Bearer ${SUPABASE_KEY}`,
     'Prefer':        'return=representation'
   };
-
+ 
   /* ══════════════════════════════════════════════
-     IN-MEMORY STATE
+     STATE
   ══════════════════════════════════════════════ */
   let state = { okrs: [], focusKpiId: null };
-
+  let currentView = 'focus'; // 'focus' | 'dashboard'
+ 
   /* ══════════════════════════════════════════════
-     SYNC STATUS
-  ══════════════════════════════════════════════ */
-  function setSyncStatus(status) {
-    const dot   = document.getElementById('sync-dot');
-    const label = document.getElementById('sync-label');
-    if (!dot || !label) return;
-    dot.className     = `sync-dot sync-dot--${status}`;
-    label.textContent = { connecting: 'CONNECTING', synced: 'SYNCED', saving: 'SAVING...', error: 'OFFLINE' }[status] || status.toUpperCase();
-  }
-
-  /* ══════════════════════════════════════════════
-     DATABASE LAYER
+     DB LAYER
   ══════════════════════════════════════════════ */
   async function dbQuery(path, options = {}) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-      ...options,
-      headers: { ...HEADERS, ...(options.headers || {}) }
+      ...options, headers: { ...HEADERS, ...(options.headers || {}) }
     });
     if (!res.ok) throw new Error(`DB [${res.status}]: ${await res.text()}`);
     if (res.status === 204) return null;
     return res.json();
   }
-
+ 
   async function dbLoadAll() {
     const [okrs, kpis, tasks, settings] = await Promise.all([
       dbQuery('okrs?select=*&order=created_at.asc'),
@@ -58,20 +46,30 @@ const APP = (() => {
     state.okrs = okrs.map(okr => ({
       ...okr,
       kpis: kpis.filter(k => k.okr_id === okr.id).map(kpi => ({
-        ...kpi,
-        tasks: tasks.filter(t => t.kpi_id === kpi.id)
+        ...kpi, tasks: tasks.filter(t => t.kpi_id === kpi.id)
       }))
     }));
     const f = settings.find(s => s.key === 'focus_kpi_id');
     state.focusKpiId = f?.value || null;
   }
-
+ 
+  /* ══════════════════════════════════════════════
+     SYNC STATUS
+  ══════════════════════════════════════════════ */
+  function setSyncStatus(s) {
+    const dot = document.getElementById('sync-dot');
+    const lbl = document.getElementById('sync-label');
+    if (!dot || !lbl) return;
+    dot.className = `sync-dot sync-dot--${s}`;
+    lbl.textContent = { connecting:'CONNECTING', synced:'SYNCED', saving:'SAVING...', error:'OFFLINE' }[s] || s.toUpperCase();
+  }
+ 
   /* ══════════════════════════════════════════════
      UTILS
   ══════════════════════════════════════════════ */
-  function daysUntil(dateStr) {
-    const today = new Date(); today.setHours(0,0,0,0);
-    return Math.round((new Date(dateStr + 'T00:00:00') - today) / 86400000);
+  function daysUntil(d) {
+    const t = new Date(); t.setHours(0,0,0,0);
+    return Math.round((new Date(d+'T00:00:00') - t) / 86400000);
   }
   function urgencyClass(days) { return days < 0 ? 'overdue' : days <= 3 ? 'warning' : 'neutral'; }
   function urgencyLabel(days) {
@@ -80,233 +78,345 @@ const APP = (() => {
     if (days <= 3)  return `${days}D LEFT`;
     return `${days} DAYS LEFT`;
   }
-  function findKpi(kpiId) {
-    for (const okr of state.okrs) {
-      const kpi = okr.kpis.find(k => k.id === kpiId);
-      if (kpi) return { okr, kpi };
-    }
+  function findKpi(id) {
+    for (const okr of state.okrs) { const k = okr.kpis.find(k => k.id === id); if (k) return { okr, kpi: k }; }
     return null;
   }
   function kpiPercent(kpi) {
-    if (kpi.type === 'hours') return kpi.target > 0 ? Math.min(100, Math.round((kpi.progress / kpi.target) * 100)) : 0;
-    if (kpi.type === 'tasks') return kpi.tasks.length ? Math.round((kpi.tasks.filter(t=>t.done).length / kpi.tasks.length)*100) : 0;
+    if (kpi.type === 'hours') return kpi.target > 0 ? Math.min(100, Math.round((kpi.progress/kpi.target)*100)) : 0;
+    if (kpi.type === 'tasks') return kpi.tasks.length ? Math.round((kpi.tasks.filter(t=>t.done).length/kpi.tasks.length)*100) : 0;
     return 0;
   }
   function kpiDetail(kpi) {
     if (kpi.type === 'hours') return `${kpi.progress}h / ${kpi.target}h`;
     return `${kpi.tasks.filter(t=>t.done).length} / ${kpi.tasks.length} tasks`;
   }
-
-  /** Compute overall OKR completion: average of all KPI percents, or 0 if no KPIs */
   function okrPercent(okr) {
     if (!okr.kpis.length) return 0;
-    const sum = okr.kpis.reduce((acc, k) => acc + kpiPercent(k), 0);
-    return Math.round(sum / okr.kpis.length);
+    return Math.round(okr.kpis.reduce((a,k) => a + kpiPercent(k), 0) / okr.kpis.length);
   }
-
-  /** Build an SVG ring given a 0–100 percent value */
-  function ringsvg(pct, size = 28, strokeWidth = 3) {
-    const r      = (size - strokeWidth) / 2;
-    const circ   = 2 * Math.PI * r;
-    const dash   = (pct / 100) * circ;
-    const cx     = size / 2;
-    const uCls   = pct >= 100 ? 'ring-complete' : 'ring-progress';
+  function ringsvg(pct, size=32, sw=3) {
+    const r = (size-sw)/2, circ = 2*Math.PI*r, dash = (pct/100)*circ, cx = size/2;
+    const cls = pct >= 100 ? 'ring-complete' : 'ring-progress';
     return `<svg class="okr-ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
-      <circle class="ring-track" cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke-width="${strokeWidth}"/>
-      <circle class="${uCls}" cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke-width="${strokeWidth}"
-        stroke-dasharray="${dash} ${circ}" stroke-dashoffset="0"
-        transform="rotate(-90 ${cx} ${cx})"/>
+      <circle class="ring-track" cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke-width="${sw}"/>
+      <circle class="${cls}" cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke-width="${sw}"
+        stroke-dasharray="${dash} ${circ}" transform="rotate(-90 ${cx} ${cx})"/>
       <text class="ring-text" x="${cx}" y="${cx}" text-anchor="middle" dominant-baseline="central"
-        font-size="${size * 0.22}">${pct}</text>
+        font-size="${Math.round(size*.22)}">${pct}</text>
     </svg>`;
   }
-
   function formatDate(d) {
     if (!d) return '';
-    const [y, m, day] = d.split('-');
+    const [y,m,day] = d.split('-');
     return `${day} ${'JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC'.split(' ')[parseInt(m)-1]} ${y}`;
   }
-  function escHtml(str) {
-    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
-
+ 
   /* ══════════════════════════════════════════════
      CLOCK
   ══════════════════════════════════════════════ */
   function initClock() {
     const el = document.getElementById('clock');
-    const tick = () => { el.textContent = [new Date().getHours(), new Date().getMinutes(), new Date().getSeconds()].map(n=>String(n).padStart(2,'0')).join(':'); };
+    const tick = () => { const n=new Date(); el.textContent=[n.getHours(),n.getMinutes(),n.getSeconds()].map(v=>String(v).padStart(2,'0')).join(':'); };
     tick(); setInterval(tick, 1000);
   }
-
+ 
+  /* ══════════════════════════════════════════════
+     VIEW SWITCHER
+  ══════════════════════════════════════════════ */
+  function switchView(view) {
+    currentView = view;
+    document.getElementById('view-focus').hidden     = (view !== 'focus');
+    document.getElementById('view-dashboard').hidden = (view !== 'dashboard');
+    document.getElementById('btn-view-focus').classList.toggle('active',     view === 'focus');
+    document.getElementById('btn-view-dashboard').classList.toggle('active', view === 'dashboard');
+    if (view === 'dashboard') renderDashboard();
+  }
+ 
   /* ══════════════════════════════════════════════
      RENDER — SIDEBAR
   ══════════════════════════════════════════════ */
   function renderSidebar() {
     const list = document.getElementById('okr-list');
     if (!state.okrs.length) {
-      list.innerHTML = `<div class="sidebar-empty">No OKRs yet.<br/>Click "+ OKR" to begin.</div>`;
-      return;
+      list.innerHTML = `<div class="sidebar-empty">No OKRs yet.<br/>Click "+ OKR" to begin.</div>`; return;
     }
     list.innerHTML = state.okrs.map(okr => {
       const days = daysUntil(okr.deadline);
-      const pct  = okrPercent(okr);
-
       const kpiRows = okr.kpis.map(kpi => {
-        const isActive = kpi.id === state.focusKpiId;
-        return `
-          <div class="kpi-row ${isActive ? 'active' : ''}" role="listitem"
-               data-kpi-id="${kpi.id}" aria-label="KPI: ${escHtml(kpi.title)}${isActive ? ', active' : ''}">
-            <div class="kpi-info">
-              <div class="kpi-name" data-action="rename-kpi" data-kpi-id="${kpi.id}"
-                   title="Double-click to rename">${escHtml(kpi.title)}</div>
-              <div class="kpi-summary">${kpiPercent(kpi)}% — ${kpiDetail(kpi)}</div>
-            </div>
-            <button class="btn-icon" data-action="delete-kpi"
-                    data-kpi-id="${kpi.id}" data-okr-id="${okr.id}" aria-label="Delete KPI">✕</button>
-          </div>`;
-      }).join('');
-
-      return `
-        <div class="okr-item" role="listitem" data-okr-id="${okr.id}">
-          <div class="okr-row">
-            ${ringsvg(pct)}
-            <div class="okr-info">
-              <div class="okr-title" data-action="rename-okr" data-okr-id="${okr.id}"
-                   title="Double-click to rename">${escHtml(okr.title)}</div>
-              <div class="okr-deadline ${urgencyClass(days)}">${formatDate(okr.deadline)} · ${urgencyLabel(days)}</div>
-            </div>
-            <button class="btn-icon" data-action="delete-okr" data-okr-id="${okr.id}" aria-label="Delete OKR">✕</button>
+        const active = kpi.id === state.focusKpiId;
+        return `<div class="kpi-row ${active?'active':''}" role="listitem" data-kpi-id="${kpi.id}">
+          <div class="kpi-info">
+            <div class="kpi-name" data-action="rename-kpi" data-kpi-id="${kpi.id}">${escHtml(kpi.title)}</div>
+            <div class="kpi-summary">${kpiPercent(kpi)}% — ${kpiDetail(kpi)}</div>
           </div>
-          <div class="kpi-list">${kpiRows}</div>
+          <button class="btn-icon" data-action="delete-kpi" data-kpi-id="${kpi.id}" data-okr-id="${okr.id}">✕</button>
         </div>`;
+      }).join('');
+      return `<div class="okr-item" role="listitem" data-okr-id="${okr.id}">
+        <div class="okr-row">
+          ${ringsvg(okrPercent(okr))}
+          <div class="okr-info">
+            <div class="okr-title" data-action="rename-okr" data-okr-id="${okr.id}" title="Double-click to rename">${escHtml(okr.title)}</div>
+            <div class="okr-deadline ${urgencyClass(days)}">${formatDate(okr.deadline)} · ${urgencyLabel(days)}</div>
+          </div>
+          <button class="btn-icon" data-action="delete-okr" data-okr-id="${okr.id}">✕</button>
+        </div>
+        <div class="kpi-list">${kpiRows}</div>
+      </div>`;
     }).join('');
   }
-
+ 
   /* ══════════════════════════════════════════════
      RENDER — FOCUS PANEL
   ══════════════════════════════════════════════ */
   function renderFocusPanel() {
     const panel = document.getElementById('focus-panel');
     if (!state.focusKpiId) {
-      panel.innerHTML = `
-        <div class="focus-empty">
-          <div class="focus-empty-label">NO TARGET LOCKED</div>
-          <div class="focus-empty-sub">Select a KPI to begin execution.</div>
-        </div>`;
+      panel.innerHTML = `<div class="focus-empty"><div class="focus-empty-label">NO TARGET LOCKED</div><div class="focus-empty-sub">Select a KPI to begin execution.</div></div>`;
       return;
     }
     const found = findKpi(state.focusKpiId);
     if (!found) { state.focusKpiId = null; renderFocusPanel(); return; }
-
     const { okr, kpi } = found;
     const days = daysUntil(okr.deadline);
     const pct  = kpiPercent(kpi);
-
+ 
     let actionHtml;
     if (kpi.type === 'hours') {
-      actionHtml = `
-        <div class="focus-action">
-          <div class="action-header">
-            <span class="action-label">LOG HOURS</span>
-          </div>
-          <div class="hours-form">
-            <input type="number" class="hours-input" id="log-hours-input"
-                   placeholder="0.0" min="0.1" step="0.5" max="24" aria-label="Hours to log"/>
-            <button class="btn btn-accent" id="btn-log-hours">LOG HOURS</button>
-          </div>
-        </div>`;
+      actionHtml = `<div class="focus-action">
+        <div class="action-header"><span class="action-label">LOG HOURS</span></div>
+        <div class="hours-form">
+          <input type="number" class="hours-input" id="log-hours-input" placeholder="0.0" min="0.1" step="0.5" max="24"/>
+          <button class="btn btn-accent" id="btn-log-hours">LOG HOURS</button>
+        </div>
+      </div>`;
     } else {
-      const taskItems = kpi.tasks.length
-        ? kpi.tasks.map(t => `
-            <div class="task-item ${t.done ? 'done' : ''}" data-task-id="${t.id}" role="listitem">
-              <div class="task-checkbox" data-action="toggle-task" data-task-id="${t.id}"
-                   role="checkbox" aria-checked="${t.done}" tabindex="0"
-                   aria-label="Toggle: ${escHtml(t.title)}">${t.done ? '✓' : ''}</div>
-              <span class="task-title" data-action="toggle-task" data-task-id="${t.id}">${escHtml(t.title)}</span>
-              <button class="btn-icon" data-action="rename-task" data-task-id="${t.id}"
-                      aria-label="Rename task" title="Rename">✎</button>
-              <button class="btn-icon" data-action="delete-task" data-task-id="${t.id}"
-                      aria-label="Delete task">✕</button>
-            </div>`).join('')
+      const items = kpi.tasks.length
+        ? kpi.tasks.map(t => {
+            const descHtml = t.description ? `<div class="task-desc-text">${escHtml(t.description)}</div>` : '';
+            return `<div class="task-item ${t.done?'done':''}" data-task-id="${t.id}" role="listitem">
+              <div class="task-checkbox" data-action="toggle-task" data-task-id="${t.id}" role="checkbox" aria-checked="${t.done}" tabindex="0">${t.done?'✓':''}</div>
+              <div class="task-body">
+                <div class="task-title-text" data-action="toggle-task" data-task-id="${t.id}">${escHtml(t.title)}</div>
+                ${descHtml}
+              </div>
+              <div class="task-actions">
+                <button class="btn-icon" data-action="rename-task" data-task-id="${t.id}" title="Edit">✎</button>
+                <button class="btn-icon" data-action="delete-task" data-task-id="${t.id}" title="Delete">✕</button>
+              </div>
+            </div>`;
+          }).join('')
         : `<div class="tasks-empty">No tasks yet. Add one above.</div>`;
-      actionHtml = `
-        <div class="focus-action">
-          <div class="action-header">
-            <span class="action-label">TASKS</span>
-            <button class="btn btn-ghost btn-sm" id="btn-open-task-modal">+ TASK</button>
-          </div>
-          <div class="task-list" id="task-list" role="list">${taskItems}</div>
-        </div>`;
+      actionHtml = `<div class="focus-action">
+        <div class="action-header">
+          <span class="action-label">TASKS</span>
+          <button class="btn btn-ghost btn-sm" id="btn-open-task-modal">+ TASK</button>
+        </div>
+        <div class="task-list" id="task-list" role="list">${items}</div>
+      </div>`;
     }
-
-    panel.innerHTML = `
-      <div class="focus-content">
-        <div class="focus-meta">
-          <span class="meta-tag">${escHtml(okr.title)}</span>
-          <span class="urgency-tag ${urgencyClass(days)}">${urgencyLabel(days)}</span>
+ 
+    panel.innerHTML = `<div class="focus-content">
+      <div class="focus-meta">
+        <span class="meta-tag">${escHtml(okr.title)}</span>
+        <span class="urgency-tag ${urgencyClass(days)}">${urgencyLabel(days)}</span>
+      </div>
+      <h1 class="focus-title">${escHtml(kpi.title)}</h1>
+      <div class="focus-progress">
+        <div class="progress-stats">
+          <span class="progress-pct">${pct}%</span>
+          <span class="progress-detail">${kpiDetail(kpi)}</span>
         </div>
-        <h1 class="focus-title">${escHtml(kpi.title)}</h1>
-        <div class="focus-progress">
-          <div class="progress-stats">
-            <span class="progress-pct">${pct}%</span>
-            <span class="progress-detail">${kpiDetail(kpi)}</span>
-          </div>
-          <div class="progress-bar-wrap" role="progressbar"
-               aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
-            <div class="progress-bar-fill" style="width:${pct}%"></div>
+        <div class="progress-bar-wrap" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-bar-fill" style="width:${pct}%"></div>
+        </div>
+      </div>
+      ${actionHtml}
+    </div>`;
+  }
+ 
+  /* ══════════════════════════════════════════════
+     RENDER — DASHBOARD
+  ══════════════════════════════════════════════ */
+  function renderDashboard() {
+    const container = document.getElementById('dashboard-inner');
+    if (!state.okrs.length) {
+      container.innerHTML = `<div class="sidebar-empty" style="padding:60px 0;font-size:14px">No data yet. Create an OKR to see your dashboard.</div>`;
+      return;
+    }
+ 
+    // ── Macro stats ──
+    const totalOkrs  = state.okrs.length;
+    const totalKpis  = state.okrs.reduce((a,o) => a + o.kpis.length, 0);
+    const totalHours = state.okrs.reduce((a,o) => a + o.kpis.filter(k=>k.type==='hours').reduce((b,k)=>b+k.progress,0), 0);
+    const totalTasks = state.okrs.reduce((a,o) => a + o.kpis.filter(k=>k.type==='tasks').reduce((b,k)=>b+k.tasks.filter(t=>t.done).length,0), 0);
+    const overallPct = totalOkrs ? Math.round(state.okrs.reduce((a,o)=>a+okrPercent(o),0)/totalOkrs) : 0;
+ 
+    const macroHtml = `<div class="dash-macro">
+      <div class="dash-stat">
+        <div class="dash-stat-label">OVERALL PROGRESS</div>
+        <div class="dash-stat-value">${overallPct}<span>%</span></div>
+        <div class="dash-stat-sub">across ${totalOkrs} objective${totalOkrs!==1?'s':''}</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-stat-label">HOURS LOGGED</div>
+        <div class="dash-stat-value">${totalHours}<span>h</span></div>
+        <div class="dash-stat-sub">${totalKpis} KPI${totalKpis!==1?'s':''} tracked</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-stat-label">TASKS COMPLETED</div>
+        <div class="dash-stat-value">${totalTasks}</div>
+        <div class="dash-stat-sub">tasks done</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-stat-label">OKRs ON TRACK</div>
+        <div class="dash-stat-value">${state.okrs.filter(o=>daysUntil(o.deadline)>=0).length}<span>/${totalOkrs}</span></div>
+        <div class="dash-stat-sub">${state.okrs.filter(o=>daysUntil(o.deadline)<0).length} overdue</div>
+      </div>
+    </div>`;
+ 
+    // ── OKR Cards ──
+    const okrCards = state.okrs.map(okr => {
+      const days  = daysUntil(okr.deadline);
+      const pct   = okrPercent(okr);
+      const kpiListHtml = okr.kpis.length
+        ? okr.kpis.map(kpi => {
+            const p    = kpiPercent(kpi);
+            const cls  = p >= 100 ? 'complete' : p > 0 ? 'progress' : 'empty';
+            return `<div class="dash-kpi-item">
+              <div class="dash-kpi-row">
+                <div class="dash-kpi-name" title="${escHtml(kpi.title)}">${escHtml(kpi.title)}</div>
+                <div class="dash-kpi-pct">${p}%</div>
+              </div>
+              <div class="dash-kpi-bar-wrap">
+                <div class="dash-kpi-bar-fill ${cls}" style="width:${p}%"></div>
+              </div>
+              <div class="dash-kpi-detail">${kpiDetail(kpi)}</div>
+            </div>`;
+          }).join('')
+        : `<div class="dash-kpi-empty">No KPIs yet</div>`;
+ 
+      return `<div class="dash-okr-card">
+        <div class="dash-okr-head">
+          <div class="dash-okr-ring">${ringsvg(pct, 52, 4)}</div>
+          <div class="dash-okr-meta">
+            <div class="dash-okr-name">${escHtml(okr.title)}</div>
+            <div class="dash-okr-deadline ${urgencyClass(days)}">${formatDate(okr.deadline)} · ${urgencyLabel(days)}</div>
           </div>
         </div>
-        ${actionHtml}
+        <div class="dash-kpi-list">${kpiListHtml}</div>
+      </div>`;
+    }).join('');
+ 
+    // ── Year progress bar chart (all OKRs by completion) ──
+    const barChartHtml = buildBarChart();
+ 
+    container.innerHTML = `
+      ${macroHtml}
+      <div class="dash-year-section">
+        <div class="dash-section-title">OKR COMPLETION OVERVIEW</div>
+        <div class="dash-chart-wrap">${barChartHtml}</div>
+      </div>
+      <div>
+        <div class="dash-section-title">OBJECTIVE BREAKDOWN</div>
+        <div class="dash-okr-grid">${okrCards}</div>
       </div>`;
   }
-
-  function render() { renderSidebar(); renderFocusPanel(); }
-
+ 
+  /** Build a horizontal bar chart of all OKRs as pure SVG */
+  function buildBarChart() {
+    if (!state.okrs.length) return '';
+    const rowH   = 36;
+    const labelW = 180;
+    const barW   = 360;
+    const pctW   = 48;
+    const padX   = 16;
+    const padY   = 12;
+    const totalH = state.okrs.length * rowH + padY * 2;
+    const totalW = labelW + barW + pctW + padX * 2;
+ 
+    const rows = state.okrs.map((okr, i) => {
+      const pct   = okrPercent(okr);
+      const y     = padY + i * rowH + rowH / 2;
+      const fill  = pct >= 100 ? 'var(--green)' : 'var(--accent)';
+      const bFill = Math.round((pct / 100) * barW);
+      const days  = daysUntil(okr.deadline);
+      const labelColor = days < 0 ? 'var(--accent)' : 'var(--text-sec)';
+      // Truncate label
+      const label = okr.title.length > 22 ? okr.title.slice(0, 21) + '…' : okr.title;
+ 
+      return `
+        <text x="${padX}" y="${y + 5}" font-size="11" fill="${labelColor}"
+              font-family="var(--font-mono)" text-anchor="start">${escHtml(label)}</text>
+        <rect x="${padX + labelW}" y="${y - 7}" width="${barW}" height="14"
+              rx="2" fill="var(--elevated)" stroke="var(--border)" stroke-width="1"/>
+        ${bFill > 0 ? `<rect x="${padX + labelW}" y="${y - 7}" width="${bFill}" height="14"
+              rx="2" fill="${fill}" opacity=".9"/>` : ''}
+        <text x="${padX + labelW + barW + 10}" y="${y + 5}" font-size="11"
+              font-family="var(--font-mono)" font-weight="700"
+              fill="${pct >= 100 ? 'var(--green)' : 'var(--text-pri)'}">${pct}%</text>`;
+    }).join('');
+ 
+    return `<svg viewBox="0 0 ${totalW} ${totalH}" xmlns="http://www.w3.org/2000/svg"
+      style="width:100%;max-width:${totalW}px;display:block;overflow:visible">
+      ${rows}
+    </svg>`;
+  }
+ 
+  /* ══════════════════════════════════════════════
+     MASTER RENDER
+  ══════════════════════════════════════════════ */
+  function render() {
+    renderSidebar();
+    renderFocusPanel();
+    if (currentView === 'dashboard') renderDashboard();
+  }
+ 
   /* ══════════════════════════════════════════════
      LOADING OVERLAY
   ══════════════════════════════════════════════ */
   function showLoading(show) {
     let ov = document.getElementById('loading-overlay');
     if (show && !ov) {
-      ov = document.createElement('div');
-      ov.id = 'loading-overlay';
+      ov = document.createElement('div'); ov.id = 'loading-overlay';
       ov.innerHTML = `<div class="loading-box"><span class="loading-label">LOADING DATA...</span></div>`;
       document.body.appendChild(ov);
-    } else if (!show && ov) { ov.remove(); }
+    } else if (!show && ov) ov.remove();
   }
-
+ 
   /* ══════════════════════════════════════════════
      MODAL SYSTEM
   ══════════════════════════════════════════════ */
   function openModal(id) {
-    const el = document.getElementById(id);
-    if (!el) return;
+    const el = document.getElementById(id); if (!el) return;
     el.removeAttribute('hidden');
-    const first = el.querySelector('input, select, button:not(.modal-close)');
-    if (first) setTimeout(() => first.focus(), 50);
+    const f = el.querySelector('input, select, textarea, button:not(.modal-close)');
+    if (f) setTimeout(() => f.focus(), 50);
   }
   function closeModal(id) { document.getElementById(id)?.setAttribute('hidden',''); clearFormErrors(); }
-  function closeAllModals() { document.querySelectorAll('.modal-overlay').forEach(m => m.setAttribute('hidden','')); clearFormErrors(); }
+  function closeAllModals() { document.querySelectorAll('.modal-overlay').forEach(m=>m.setAttribute('hidden','')); clearFormErrors(); }
   function clearFormErrors() {
-    document.querySelectorAll('.form-error').forEach(e => e.textContent='');
-    document.querySelectorAll('.form-input').forEach(i => i.classList.remove('has-error'));
+    document.querySelectorAll('.form-error').forEach(e=>e.textContent='');
+    document.querySelectorAll('.form-input').forEach(i=>i.classList.remove('has-error'));
   }
-  function showError(inputId, errorId, msg) {
+  function showError(inputId, errId, msg) {
     document.getElementById(inputId)?.classList.add('has-error');
-    const e = document.getElementById(errorId); if (e) e.textContent = msg;
+    const e=document.getElementById(errId); if(e) e.textContent=msg;
   }
-
+ 
   function populateOkrSelect() {
     const sel = document.getElementById('kpi-okr');
     sel.innerHTML = '<option value="">— Select OKR —</option>';
-    state.okrs.forEach(okr => { const o = document.createElement('option'); o.value=okr.id; o.textContent=okr.title; sel.appendChild(o); });
+    state.okrs.forEach(o => { const opt=document.createElement('option'); opt.value=o.id; opt.textContent=o.title; sel.appendChild(opt); });
   }
-
   function populateFocusModal() {
     const list = document.getElementById('focus-list');
-    const all  = state.okrs.flatMap(okr => okr.kpis.map(kpi => ({okr,kpi})));
-    if (!all.length) { list.innerHTML = `<div class="focus-list-empty">No KPIs yet. Create one first.</div>`; return; }
+    const all  = state.okrs.flatMap(o => o.kpis.map(k => ({okr:o,kpi:k})));
+    if (!all.length) { list.innerHTML=`<div class="focus-list-empty">No KPIs yet.</div>`; return; }
     list.innerHTML = all.map(({okr,kpi}) => `
       <div class="focus-select-item ${kpi.id===state.focusKpiId?'selected':''}"
            data-action="set-focus" data-kpi-id="${kpi.id}" role="listitem" tabindex="0">
@@ -314,417 +424,313 @@ const APP = (() => {
         <div class="focus-select-okr">${escHtml(okr.title)}</div>
       </div>`).join('');
   }
-
+ 
   /* ══════════════════════════════════════════════
-     CONFIRM DIALOG
+     CONFIRM + RENAME
   ══════════════════════════════════════════════ */
-  let _confirmCallback = null;
-  function showConfirm(msg, cb) { document.getElementById('confirm-message').textContent = msg; _confirmCallback = cb; openModal('modal-confirm'); }
-
-  /* ══════════════════════════════════════════════
-     RENAME MODAL — shared for OKR / KPI / Task
-  ══════════════════════════════════════════════ */
-  let _renameCallback = null;
-
-  function openRename(label, currentValue, onSave) {
+  let _confirmCb = null;
+  function showConfirm(msg, cb) { document.getElementById('confirm-message').textContent=msg; _confirmCb=cb; openModal('modal-confirm'); }
+ 
+  let _renameCb = null;
+  function openRename(label, current, onSave) {
     document.getElementById('modal-rename-title').textContent = `RENAME ${label}`;
     document.getElementById('rename-label').textContent = `NEW ${label} NAME`;
     const input = document.getElementById('rename-input');
-    input.value = currentValue;
-    input.maxLength = 120;
-    _renameCallback = onSave;
-    clearFormErrors();
-    openModal('modal-rename');
-    setTimeout(() => { input.select(); }, 60);
+    input.value = current; _renameCb = onSave; clearFormErrors();
+    openModal('modal-rename'); setTimeout(()=>input.select(), 60);
   }
-
-  document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('form-rename').addEventListener('submit', async e => {
-      e.preventDefault();
-      const val = document.getElementById('rename-input').value.trim();
-      if (!val) { showError('rename-input','rename-error','Name cannot be empty.'); return; }
-      if (typeof _renameCallback === 'function') {
-        closeModal('modal-rename');
-        await _renameCallback(val);
-        _renameCallback = null;
-      }
-    });
-  });
-
+ 
   /* ══════════════════════════════════════════════
-     JSON EXPORT
+     EXPORT
   ══════════════════════════════════════════════ */
   function exportData() {
-    const payload = {
-      exported_at: new Date().toISOString(),
-      focus_kpi_id: state.focusKpiId,
-      okrs: state.okrs.map(okr => ({
-        id: okr.id, title: okr.title, deadline: okr.deadline,
-        kpis: okr.kpis.map(kpi => ({
-          id: kpi.id, title: kpi.title, type: kpi.type,
-          target: kpi.target, progress: kpi.progress,
-          tasks: kpi.tasks.map(t => ({ id: t.id, title: t.title, done: t.done }))
-        }))
-      }))
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `eyph-export-${new Date().toISOString().slice(0,10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const blob = new Blob([JSON.stringify({
+      exported_at: new Date().toISOString(), focus_kpi_id: state.focusKpiId,
+      okrs: state.okrs.map(o=>({ id:o.id, title:o.title, deadline:o.deadline,
+        kpis: o.kpis.map(k=>({ id:k.id, title:k.title, type:k.type, target:k.target, progress:k.progress,
+          tasks: k.tasks.map(t=>({id:t.id, title:t.title, description:t.description||'', done:t.done})) })) }))
+    }, null, 2)], {type:'application/json'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download=`eyph-export-${new Date().toISOString().slice(0,10)}.json`; a.click();
+    URL.revokeObjectURL(a.href);
   }
-
+ 
   /* ══════════════════════════════════════════════
      CRUD — OKR
   ══════════════════════════════════════════════ */
   async function createOkr(title, deadline) {
     setSyncStatus('saving');
     try {
-      const [row] = await dbQuery('okrs', { method:'POST', body: JSON.stringify({title:title.trim(), deadline}) });
-      state.okrs.push({...row, kpis:[]});
-      render(); setSyncStatus('synced');
+      const [row] = await dbQuery('okrs',{method:'POST',body:JSON.stringify({title:title.trim(),deadline})});
+      state.okrs.push({...row,kpis:[]}); render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
   async function deleteOkr(okrId) {
     setSyncStatus('saving');
     try {
-      const okr = state.okrs.find(o => o.id === okrId);
-      if (okr?.kpis.some(k => k.id === state.focusKpiId)) { state.focusKpiId = null; await saveFocus(null); }
-      await dbQuery(`okrs?id=eq.${okrId}`, { method:'DELETE' });
-      state.okrs = state.okrs.filter(o => o.id !== okrId);
-      render(); setSyncStatus('synced');
+      const okr = state.okrs.find(o=>o.id===okrId);
+      if (okr?.kpis.some(k=>k.id===state.focusKpiId)) { state.focusKpiId=null; await saveFocus(null); }
+      await dbQuery(`okrs?id=eq.${okrId}`,{method:'DELETE'});
+      state.okrs=state.okrs.filter(o=>o.id!==okrId); render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
-  async function renameOkr(okrId, newTitle) {
+  async function renameOkr(id, title) {
     setSyncStatus('saving');
     try {
-      await dbQuery(`okrs?id=eq.${okrId}`, { method:'PATCH', body: JSON.stringify({title: newTitle}) });
-      const okr = state.okrs.find(o => o.id === okrId);
-      if (okr) okr.title = newTitle;
-      render(); setSyncStatus('synced');
+      await dbQuery(`okrs?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({title})});
+      const o=state.okrs.find(o=>o.id===id); if(o) o.title=title; render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
+ 
   /* ══════════════════════════════════════════════
      CRUD — KPI
   ══════════════════════════════════════════════ */
   async function createKpi(okrId, title, type, target) {
     setSyncStatus('saving');
     try {
-      const [row] = await dbQuery('kpis', { method:'POST', body: JSON.stringify({
-        okr_id:okrId, title:title.trim(), type,
-        target: type==='hours' ? Number(target) : 0, progress:0
-      })});
-      const okr = state.okrs.find(o => o.id === okrId);
-      if (okr) okr.kpis.push({...row, tasks:[]});
-      if (!state.focusKpiId) { state.focusKpiId = row.id; await saveFocus(row.id); }
+      const [row] = await dbQuery('kpis',{method:'POST',body:JSON.stringify({okr_id:okrId,title:title.trim(),type,target:type==='hours'?Number(target):0,progress:0})});
+      const okr=state.okrs.find(o=>o.id===okrId); if(okr) okr.kpis.push({...row,tasks:[]});
+      if (!state.focusKpiId) { state.focusKpiId=row.id; await saveFocus(row.id); }
       render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
   async function deleteKpi(okrId, kpiId) {
     setSyncStatus('saving');
     try {
-      if (kpiId === state.focusKpiId) { state.focusKpiId = null; await saveFocus(null); }
-      await dbQuery(`kpis?id=eq.${kpiId}`, { method:'DELETE' });
-      const okr = state.okrs.find(o => o.id === okrId);
-      if (okr) okr.kpis = okr.kpis.filter(k => k.id !== kpiId);
+      if (kpiId===state.focusKpiId) { state.focusKpiId=null; await saveFocus(null); }
+      await dbQuery(`kpis?id=eq.${kpiId}`,{method:'DELETE'});
+      const okr=state.okrs.find(o=>o.id===okrId); if(okr) okr.kpis=okr.kpis.filter(k=>k.id!==kpiId);
       render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
-  async function renameKpi(kpiId, newTitle) {
+  async function renameKpi(id, title) {
     setSyncStatus('saving');
     try {
-      await dbQuery(`kpis?id=eq.${kpiId}`, { method:'PATCH', body: JSON.stringify({title: newTitle}) });
-      const found = findKpi(kpiId);
-      if (found) found.kpi.title = newTitle;
-      render(); setSyncStatus('synced');
+      await dbQuery(`kpis?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({title})});
+      const f=findKpi(id); if(f) f.kpi.title=title; render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
+ 
   /* ══════════════════════════════════════════════
      CRUD — HOURS
   ══════════════════════════════════════════════ */
   async function logHours(hours) {
-    const found = findKpi(state.focusKpiId);
-    if (!found) return;
+    const f=findKpi(state.focusKpiId); if(!f) return;
     setSyncStatus('saving');
     try {
-      const newProg = Math.round((found.kpi.progress + hours) * 100) / 100;
-      await dbQuery(`kpis?id=eq.${found.kpi.id}`, { method:'PATCH', body: JSON.stringify({progress:newProg}) });
-      found.kpi.progress = newProg;
-      render(); setSyncStatus('synced');
+      const p=Math.round((f.kpi.progress+hours)*100)/100;
+      await dbQuery(`kpis?id=eq.${f.kpi.id}`,{method:'PATCH',body:JSON.stringify({progress:p})});
+      f.kpi.progress=p; render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
+ 
   /* ══════════════════════════════════════════════
      CRUD — TASKS
   ══════════════════════════════════════════════ */
-  async function addTask(title) {
-    const found = findKpi(state.focusKpiId);
-    if (!found || found.kpi.type !== 'tasks') return;
+  async function addTask(title, description) {
+    const f=findKpi(state.focusKpiId); if(!f||f.kpi.type!=='tasks') return;
     setSyncStatus('saving');
     try {
-      const [row] = await dbQuery('tasks', { method:'POST', body: JSON.stringify({kpi_id:found.kpi.id, title:title.trim(), done:false}) });
-      found.kpi.tasks.push(row);
-      render(); setSyncStatus('synced');
+      const [row] = await dbQuery('tasks',{method:'POST',body:JSON.stringify({kpi_id:f.kpi.id,title:title.trim(),description:description||'',done:false})});
+      f.kpi.tasks.push(row); render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
   async function toggleTask(taskId) {
-    const found = findKpi(state.focusKpiId);
-    if (!found) return;
-    const task = found.kpi.tasks.find(t => t.id === taskId);
-    if (!task) return;
+    const f=findKpi(state.focusKpiId); if(!f) return;
+    const task=f.kpi.tasks.find(t=>t.id===taskId); if(!task) return;
     setSyncStatus('saving');
     try {
-      const newDone = !task.done;
-      await dbQuery(`tasks?id=eq.${taskId}`, { method:'PATCH', body: JSON.stringify({done:newDone}) });
-      task.done = newDone;
-      found.kpi.progress = found.kpi.tasks.filter(t=>t.done).length;
-      await dbQuery(`kpis?id=eq.${found.kpi.id}`, { method:'PATCH', body: JSON.stringify({progress:found.kpi.progress}) });
+      const done=!task.done;
+      await dbQuery(`tasks?id=eq.${taskId}`,{method:'PATCH',body:JSON.stringify({done})});
+      task.done=done; f.kpi.progress=f.kpi.tasks.filter(t=>t.done).length;
+      await dbQuery(`kpis?id=eq.${f.kpi.id}`,{method:'PATCH',body:JSON.stringify({progress:f.kpi.progress})});
       render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
-  async function renameTask(taskId, newTitle) {
-    const found = findKpi(state.focusKpiId);
-    if (!found) return;
+  async function renameTask(taskId, title) {
+    const f=findKpi(state.focusKpiId); if(!f) return;
     setSyncStatus('saving');
     try {
-      await dbQuery(`tasks?id=eq.${taskId}`, { method:'PATCH', body: JSON.stringify({title:newTitle}) });
-      const task = found.kpi.tasks.find(t => t.id === taskId);
-      if (task) task.title = newTitle;
-      render(); setSyncStatus('synced');
+      await dbQuery(`tasks?id=eq.${taskId}`,{method:'PATCH',body:JSON.stringify({title})});
+      const t=f.kpi.tasks.find(t=>t.id===taskId); if(t) t.title=title; render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
   async function deleteTask(taskId) {
-    const found = findKpi(state.focusKpiId);
-    if (!found) return;
+    const f=findKpi(state.focusKpiId); if(!f) return;
     setSyncStatus('saving');
     try {
-      await dbQuery(`tasks?id=eq.${taskId}`, { method:'DELETE' });
-      found.kpi.tasks = found.kpi.tasks.filter(t => t.id !== taskId);
-      found.kpi.progress = found.kpi.tasks.filter(t=>t.done).length;
-      await dbQuery(`kpis?id=eq.${found.kpi.id}`, { method:'PATCH', body: JSON.stringify({progress:found.kpi.progress}) });
+      await dbQuery(`tasks?id=eq.${taskId}`,{method:'DELETE'});
+      f.kpi.tasks=f.kpi.tasks.filter(t=>t.id!==taskId);
+      f.kpi.progress=f.kpi.tasks.filter(t=>t.done).length;
+      await dbQuery(`kpis?id=eq.${f.kpi.id}`,{method:'PATCH',body:JSON.stringify({progress:f.kpi.progress})});
       render(); setSyncStatus('synced');
     } catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
+ 
   /* ══════════════════════════════════════════════
      FOCUS
   ══════════════════════════════════════════════ */
-  async function saveFocus(kpiId) {
-    await dbQuery(`app_settings?key=eq.focus_kpi_id`, { method:'PATCH', body: JSON.stringify({value:kpiId}) });
-  }
+  async function saveFocus(kpiId) { await dbQuery(`app_settings?key=eq.focus_kpi_id`,{method:'PATCH',body:JSON.stringify({value:kpiId})}); }
   async function setFocus(kpiId) {
     setSyncStatus('saving');
-    try { state.focusKpiId = kpiId; await saveFocus(kpiId); render(); setSyncStatus('synced'); }
+    try { state.focusKpiId=kpiId; await saveFocus(kpiId); render(); setSyncStatus('synced'); }
     catch(e) { console.error(e); setSyncStatus('error'); }
   }
-
+ 
   /* ══════════════════════════════════════════════
      FORM HANDLERS
   ══════════════════════════════════════════════ */
   async function handleOkrSubmit(e) {
     e.preventDefault(); clearFormErrors();
-    const title    = document.getElementById('okr-title').value.trim();
-    const deadline = document.getElementById('okr-deadline').value;
-    let ok = true;
-    if (!title)    { showError('okr-title','okr-title-error','Title is required.'); ok=false; }
-    if (!deadline) { showError('okr-deadline','okr-deadline-error','Deadline is required.'); ok=false; }
-    if (!ok) return;
-    document.getElementById('form-okr').reset();
-    closeModal('modal-okr');
+    const title=document.getElementById('okr-title').value.trim();
+    const deadline=document.getElementById('okr-deadline').value;
+    let ok=true;
+    if(!title) { showError('okr-title','okr-title-error','Title is required.'); ok=false; }
+    if(!deadline) { showError('okr-deadline','okr-deadline-error','Deadline is required.'); ok=false; }
+    if(!ok) return;
+    document.getElementById('form-okr').reset(); closeModal('modal-okr');
     await createOkr(title, deadline);
   }
-
   async function handleKpiSubmit(e) {
     e.preventDefault(); clearFormErrors();
-    const okrId  = document.getElementById('kpi-okr').value;
-    const title  = document.getElementById('kpi-title').value.trim();
-    const type   = document.getElementById('kpi-type').value;
-    const target = document.getElementById('kpi-target').value;
-    let ok = true;
-    if (!okrId)  { showError('kpi-okr',  'kpi-okr-error',  'Select an OKR.'); ok=false; }
-    if (!title)  { showError('kpi-title','kpi-title-error','KPI title is required.'); ok=false; }
-    if (type==='hours' && (!target || Number(target)<=0)) { showError('kpi-target','kpi-target-error','Enter a positive target.'); ok=false; }
-    if (!ok) return;
+    const okrId=document.getElementById('kpi-okr').value;
+    const title=document.getElementById('kpi-title').value.trim();
+    const type=document.getElementById('kpi-type').value;
+    const target=document.getElementById('kpi-target').value;
+    let ok=true;
+    if(!okrId) { showError('kpi-okr','kpi-okr-error','Select an OKR.'); ok=false; }
+    if(!title) { showError('kpi-title','kpi-title-error','KPI title is required.'); ok=false; }
+    if(type==='hours'&&(!target||Number(target)<=0)) { showError('kpi-target','kpi-target-error','Enter a positive target.'); ok=false; }
+    if(!ok) return;
     document.getElementById('form-kpi').reset();
-    document.getElementById('kpi-type').value = 'hours';
-    document.querySelectorAll('.type-btn').forEach(b => b.classList.toggle('active', b.dataset.type==='hours'));
-    document.getElementById('kpi-target-group').style.display = '';
+    document.getElementById('kpi-type').value='hours';
+    document.querySelectorAll('.type-btn').forEach(b=>b.classList.toggle('active',b.dataset.type==='hours'));
+    document.getElementById('kpi-target-group').style.display='';
     closeModal('modal-kpi');
     await createKpi(okrId, title, type, target);
   }
-
   async function handleTaskSubmit(e) {
     e.preventDefault(); clearFormErrors();
-    const title = document.getElementById('task-title').value.trim();
-    if (!title) { showError('task-title','task-title-error','Task description is required.'); return; }
-    document.getElementById('form-task').reset();
-    closeModal('modal-task');
-    await addTask(title);
+    const title=document.getElementById('task-title').value.trim();
+    const desc=document.getElementById('task-desc').value.trim();
+    if(!title) { showError('task-title','task-title-error','Task title is required.'); return; }
+    document.getElementById('form-task').reset(); closeModal('modal-task');
+    await addTask(title, desc);
   }
-
+ 
   /* ══════════════════════════════════════════════
-     EVENT DELEGATION
+     EVENTS
   ══════════════════════════════════════════════ */
   function initEvents() {
-
-    // ── Header buttons ──
+    // View toggle
+    document.getElementById('btn-view-focus').addEventListener('click',     () => switchView('focus'));
+    document.getElementById('btn-view-dashboard').addEventListener('click', () => switchView('dashboard'));
+ 
+    // Header
     document.getElementById('btn-open-okr-modal').addEventListener('click', () => {
       clearFormErrors(); document.getElementById('form-okr').reset(); openModal('modal-okr');
     });
     document.getElementById('btn-open-kpi-modal').addEventListener('click', () => {
       if (!state.okrs.length) { alert('Create at least one OKR first.'); return; }
       populateOkrSelect(); clearFormErrors(); document.getElementById('form-kpi').reset();
-      document.getElementById('kpi-type').value = 'hours';
-      document.querySelectorAll('.type-btn').forEach(b => b.classList.toggle('active', b.dataset.type==='hours'));
-      document.getElementById('kpi-target-group').style.display = '';
+      document.getElementById('kpi-type').value='hours';
+      document.querySelectorAll('.type-btn').forEach(b=>b.classList.toggle('active',b.dataset.type==='hours'));
+      document.getElementById('kpi-target-group').style.display='';
       openModal('modal-kpi');
     });
     document.getElementById('btn-open-focus-modal').addEventListener('click', () => { populateFocusModal(); openModal('modal-focus'); });
     document.getElementById('btn-export').addEventListener('click', exportData);
-
-    // ── Forms ──
+ 
+    // Forms
     document.getElementById('form-okr').addEventListener('submit',  handleOkrSubmit);
     document.getElementById('form-kpi').addEventListener('submit',  handleKpiSubmit);
     document.getElementById('form-task').addEventListener('submit', handleTaskSubmit);
-
-    // ── KPI type toggle ──
-    document.querySelector('.type-toggle').addEventListener('click', e => {
-      const btn = e.target.closest('.type-btn'); if (!btn) return;
-      const type = btn.dataset.type;
-      document.getElementById('kpi-type').value = type;
-      document.querySelectorAll('.type-btn').forEach(b => b.classList.toggle('active', b===btn));
-      document.getElementById('kpi-target-group').style.display = type==='hours' ? '' : 'none';
+    document.getElementById('form-rename').addEventListener('submit', async e => {
+      e.preventDefault();
+      const val=document.getElementById('rename-input').value.trim();
+      if (!val) { showError('rename-input','rename-error','Name cannot be empty.'); return; }
+      if (typeof _renameCb==='function') { closeModal('modal-rename'); await _renameCb(val); _renameCb=null; }
     });
-
-    // ── Modal close (data-close attr + overlay + ESC) ──
+ 
+    // KPI type toggle
+    document.querySelector('.type-toggle').addEventListener('click', e => {
+      const btn=e.target.closest('.type-btn'); if(!btn) return;
+      const type=btn.dataset.type;
+      document.getElementById('kpi-type').value=type;
+      document.querySelectorAll('.type-btn').forEach(b=>b.classList.toggle('active',b===btn));
+      document.getElementById('kpi-target-group').style.display=type==='hours'?'':'none';
+    });
+ 
+    // Modal close
     document.body.addEventListener('click', e => { const b=e.target.closest('[data-close]'); if(b) closeModal(b.dataset.close); });
-    document.querySelectorAll('.modal-overlay').forEach(ov => ov.addEventListener('click', e => { if(e.target===ov) closeModal(ov.id); }));
+    document.querySelectorAll('.modal-overlay').forEach(ov=>ov.addEventListener('click',e=>{ if(e.target===ov) closeModal(ov.id); }));
     document.addEventListener('keydown', e => {
       if (e.key==='Escape') closeAllModals();
-      if (e.key==='f' && !e.ctrlKey && !e.metaKey && !e.altKey && !['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+      if (e.key==='f'&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName)) {
         populateFocusModal(); openModal('modal-focus');
       }
     });
-
-    // ── Confirm ──
+ 
+    // Confirm
     document.getElementById('btn-confirm-delete').addEventListener('click', () => {
-      if (typeof _confirmCallback==='function') { _confirmCallback(); _confirmCallback=null; }
-      closeModal('modal-confirm');
+      if (typeof _confirmCb==='function') { _confirmCb(); _confirmCb=null; } closeModal('modal-confirm');
     });
-
-    // ── SIDEBAR: OKR delete/rename + KPI delete/rename/focus ──
+ 
+    // Sidebar
     document.getElementById('okr-list').addEventListener('click', e => {
-      // Delete OKR
-      const delOkr = e.target.closest('[data-action="delete-okr"]');
-      if (delOkr) {
-        const okr = state.okrs.find(o=>o.id===delOkr.dataset.okrId);
-        if (okr) showConfirm(`Delete OKR "${okr.title}"? All KPIs will be removed.`, () => deleteOkr(okr.id));
-        return;
-      }
-      // Delete KPI
-      const delKpi = e.target.closest('[data-action="delete-kpi"]');
-      if (delKpi) {
-        const found = findKpi(delKpi.dataset.kpiId);
-        if (found) showConfirm(`Delete KPI "${found.kpi.title}"?`, () => deleteKpi(delKpi.dataset.okrId, delKpi.dataset.kpiId));
-        return;
-      }
-      // Focus via KPI row click
-      const kpiRow = e.target.closest('.kpi-row');
-      if (kpiRow && !e.target.closest('.btn-icon') && !e.target.closest('[data-action="rename-kpi"]')) {
-        setFocus(kpiRow.dataset.kpiId);
-      }
+      const dOkr=e.target.closest('[data-action="delete-okr"]');
+      if (dOkr) { const o=state.okrs.find(o=>o.id===dOkr.dataset.okrId); if(o) showConfirm(`Delete OKR "${o.title}"? All KPIs will be removed.`,()=>deleteOkr(o.id)); return; }
+      const dKpi=e.target.closest('[data-action="delete-kpi"]');
+      if (dKpi) { const f=findKpi(dKpi.dataset.kpiId); if(f) showConfirm(`Delete KPI "${f.kpi.title}"?`,()=>deleteKpi(dKpi.dataset.okrId,dKpi.dataset.kpiId)); return; }
+      const kpiRow=e.target.closest('.kpi-row');
+      if (kpiRow&&!e.target.closest('.btn-icon')&&!e.target.closest('[data-action]')) setFocus(kpiRow.dataset.kpiId);
     });
-
-    // ── SIDEBAR: Double-click to rename OKR or KPI ──
     document.getElementById('okr-list').addEventListener('dblclick', e => {
-      const renOkr = e.target.closest('[data-action="rename-okr"]');
-      if (renOkr) {
-        const okr = state.okrs.find(o=>o.id===renOkr.dataset.okrId);
-        if (okr) openRename('OKR', okr.title, newTitle => renameOkr(okr.id, newTitle));
-        return;
-      }
-      const renKpi = e.target.closest('[data-action="rename-kpi"]');
-      if (renKpi) {
-        const found = findKpi(renKpi.dataset.kpiId);
-        if (found) openRename('KPI', found.kpi.title, newTitle => renameKpi(found.kpi.id, newTitle));
-      }
+      const rOkr=e.target.closest('[data-action="rename-okr"]');
+      if (rOkr) { const o=state.okrs.find(o=>o.id===rOkr.dataset.okrId); if(o) openRename('OKR',o.title,t=>renameOkr(o.id,t)); return; }
+      const rKpi=e.target.closest('[data-action="rename-kpi"]');
+      if (rKpi) { const f=findKpi(rKpi.dataset.kpiId); if(f) openRename('KPI',f.kpi.title,t=>renameKpi(f.kpi.id,t)); }
     });
-
-    // ── FOCUS PANEL: log hours / task add+toggle+rename+delete ──
+ 
+    // Focus panel
     document.getElementById('focus-panel').addEventListener('click', e => {
-      if (e.target.id === 'btn-log-hours') {
-        const input = document.getElementById('log-hours-input');
-        const val   = parseFloat(input.value);
-        if (!val || val<=0) { input.focus(); input.style.borderColor='var(--accent)'; setTimeout(()=>input.style.borderColor='',1000); return; }
-        logHours(val); input.value=''; input.focus(); return;
+      if (e.target.id==='btn-log-hours') {
+        const inp=document.getElementById('log-hours-input'), val=parseFloat(inp.value);
+        if (!val||val<=0) { inp.focus(); inp.style.borderColor='var(--accent)'; setTimeout(()=>inp.style.borderColor='',1000); return; }
+        logHours(val); inp.value=''; inp.focus(); return;
       }
-      if (e.target.id === 'btn-open-task-modal') {
-        clearFormErrors(); document.getElementById('form-task').reset(); openModal('modal-task'); return;
-      }
-      const toggle = e.target.closest('[data-action="toggle-task"]');
-      if (toggle) { toggleTask(toggle.dataset.taskId); return; }
-
-      const renTask = e.target.closest('[data-action="rename-task"]');
-      if (renTask) {
-        const found = findKpi(state.focusKpiId);
-        const task  = found?.kpi.tasks.find(t=>t.id===renTask.dataset.taskId);
-        if (task) openRename('TASK', task.title, newTitle => renameTask(task.id, newTitle));
-        return;
-      }
-      const delTask = e.target.closest('[data-action="delete-task"]');
-      if (delTask) {
-        const found = findKpi(state.focusKpiId);
-        const task  = found?.kpi.tasks.find(t=>t.id===delTask.dataset.taskId);
-        if (task) showConfirm(`Delete task "${task.title}"?`, () => deleteTask(task.id));
-      }
+      if (e.target.id==='btn-open-task-modal') { clearFormErrors(); document.getElementById('form-task').reset(); openModal('modal-task'); return; }
+      const tog=e.target.closest('[data-action="toggle-task"]'); if(tog) { toggleTask(tog.dataset.taskId); return; }
+      const ren=e.target.closest('[data-action="rename-task"]');
+      if (ren) { const f=findKpi(state.focusKpiId); const t=f?.kpi.tasks.find(t=>t.id===ren.dataset.taskId); if(t) openRename('TASK',t.title,nv=>renameTask(t.id,nv)); return; }
+      const del=e.target.closest('[data-action="delete-task"]');
+      if (del) { const f=findKpi(state.focusKpiId); const t=f?.kpi.tasks.find(t=>t.id===del.dataset.taskId); if(t) showConfirm(`Delete task "${t.title}"?`,()=>deleteTask(t.id)); }
     });
-
     document.getElementById('focus-panel').addEventListener('keydown', e => {
-      if (e.key==='Enter' && e.target.id==='log-hours-input') { e.preventDefault(); document.getElementById('btn-log-hours')?.click(); }
-      if ((e.key==='Enter'||e.key===' ') && e.target.closest('[data-action="toggle-task"]')) {
-        e.preventDefault(); toggleTask(e.target.closest('[data-action="toggle-task"]').dataset.taskId);
-      }
+      if (e.key==='Enter'&&e.target.id==='log-hours-input') { e.preventDefault(); document.getElementById('btn-log-hours')?.click(); }
+      if ((e.key==='Enter'||e.key===' ')&&e.target.closest('[data-action="toggle-task"]')) { e.preventDefault(); toggleTask(e.target.closest('[data-action="toggle-task"]').dataset.taskId); }
     });
-
-    // ── Focus modal ──
-    document.getElementById('focus-list').addEventListener('click', e => {
-      const item = e.target.closest('[data-action="set-focus"]');
-      if (item) { setFocus(item.dataset.kpiId); closeModal('modal-focus'); }
-    });
+ 
+    // Focus modal
+    document.getElementById('focus-list').addEventListener('click', e => { const i=e.target.closest('[data-action="set-focus"]'); if(i) { setFocus(i.dataset.kpiId); closeModal('modal-focus'); } });
     document.getElementById('focus-list').addEventListener('keydown', e => {
-      if (e.key==='Enter'||e.key===' ') {
-        const item=e.target.closest('[data-action="set-focus"]');
-        if (item) { e.preventDefault(); setFocus(item.dataset.kpiId); closeModal('modal-focus'); }
-      }
+      if (e.key==='Enter'||e.key===' ') { const i=e.target.closest('[data-action="set-focus"]'); if(i) { e.preventDefault(); setFocus(i.dataset.kpiId); closeModal('modal-focus'); } }
     });
   }
-
+ 
   /* ══════════════════════════════════════════════
      INIT
   ══════════════════════════════════════════════ */
   async function init() {
-    initClock();
-    initEvents();
-    setSyncStatus('connecting');
-    showLoading(true);
+    initClock(); initEvents();
+    setSyncStatus('connecting'); showLoading(true);
     try { await dbLoadAll(); setSyncStatus('synced'); }
-    catch(e) { console.error('EYPH init:', e); setSyncStatus('error'); }
+    catch(e) { console.error('EYPH init:',e); setSyncStatus('error'); }
     finally { showLoading(false); }
     render();
   }
-
+ 
   return { init };
 })();
-
+ 
 document.addEventListener('DOMContentLoaded', APP.init);
