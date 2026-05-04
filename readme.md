@@ -23,7 +23,7 @@ Deadline urgency is surfaced automatically: warnings at 3 days, pulsing red past
 
 - Vanilla HTML, CSS, JavaScript — zero dependencies, zero build step
 - Supabase (PostgreSQL + REST API) for persistent backend storage
-- Netlify for hosting
+- Vercel for hosting
 - Three-file architecture: `index.html`, `style.css`, `script.js`
 
 ---
@@ -68,13 +68,14 @@ All foreign keys use `ON DELETE CASCADE`. RLS is enabled with open policies (sin
 ## How to use
 
 1. Click **+ OKR** to create an objective with a deadline
-2. Click **+ KPI** to attach a measurable result — choose Hours or Tasks type
+2. Click **+ KPI** to attach a measurable result, choose Hours or Tasks type
 3. Click any KPI in the sidebar to lock it as your active focus
-4. Log hours or check off tasks in the focus panel
-5. Press **F** or click **⚡ CHANGE FOCUS** to switch between KPIs
-6. Switch to **◎ DASHBOARD** to see macro progress, OKR rings, and KPI bars
-7. Double-click any OKR or KPI title to rename it inline
-8. Click **⬇ EXPORT** to download a full JSON backup
+4. You can add descriptions to the KPIs
+5. Log hours or check off tasks in the focus panel
+6. Press **F** or click **⚡ CHANGE FOCUS** to switch between KPIs
+7. Switch to **◎ DASHBOARD** to see macro progress, OKR rings, and KPI bars
+8. Double-click any OKR or KPI title to rename it inline
+9. Click **⬇ EXPORT** to download a full JSON backup
 
 ---
 
@@ -83,7 +84,7 @@ All foreign keys use `ON DELETE CASCADE`. RLS is enabled with open policies (sin
 Files must be present locally before deploying. From the project directory:
 
 ```powershell
-npx -y @netlify/mcp@latest --site-id 8a36cd7e-2c83-4fd0-bb3d-1ec72fc9abf8 --proxy-path "<proxy-path>"
+npx -y @vercel/mcp@latest --site-id 8a36cd7e-2c83-4fd0-bb3d-1ec72fc9abf8 --proxy-path "<proxy-path>"
 ```
 
 ---
