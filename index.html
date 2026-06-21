@@ -7,43 +7,94 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
- 
+
+  <!-- ═══════════════════════════════════════════
+       AUTH SCREEN — gates everything below it
+  ═══════════════════════════════════════════ -->
+  <div class="auth-screen" id="auth-screen">
+    <div class="auth-card">
+      <div class="auth-brand">EYPH</div>
+      <div class="auth-sub">Earn Your Phase</div>
+
+      <div class="auth-tabs" role="group" aria-label="Sign in or sign up">
+        <button class="auth-tab active" id="tab-signin" data-tab="signin">SIGN IN</button>
+        <button class="auth-tab" id="tab-signup" data-tab="signup">SIGN UP</button>
+      </div>
+
+      <!-- Sign In -->
+      <form class="auth-form" id="form-signin" novalidate>
+        <div class="form-group">
+          <label for="signin-email" class="form-label">EMAIL</label>
+          <input type="email" id="signin-email" class="form-input" autocomplete="email" required />
+        </div>
+        <div class="form-group">
+          <label for="signin-password" class="form-label">PASSWORD</label>
+          <input type="password" id="signin-password" class="form-input" autocomplete="current-password" required />
+        </div>
+        <div class="auth-error" id="signin-error" role="alert"></div>
+        <button type="submit" class="btn btn-accent auth-submit" id="btn-signin">
+          <span class="auth-btn-label">SIGN IN</span>
+        </button>
+      </form>
+
+      <!-- Sign Up -->
+      <form class="auth-form" id="form-signup" novalidate hidden>
+        <div class="form-group">
+          <label for="signup-email" class="form-label">EMAIL</label>
+          <input type="email" id="signup-email" class="form-input" autocomplete="email" required />
+        </div>
+        <div class="form-group">
+          <label for="signup-password" class="form-label">PASSWORD <span style="opacity:.5;font-weight:400">(min 6 characters)</span></label>
+          <input type="password" id="signup-password" class="form-input" autocomplete="new-password" minlength="6" required />
+        </div>
+        <div class="auth-error" id="signup-error" role="alert"></div>
+        <div class="auth-notice" id="signup-notice" hidden></div>
+        <button type="submit" class="btn btn-accent auth-submit" id="btn-signup">
+          <span class="auth-btn-label">CREATE ACCOUNT</span>
+        </button>
+      </form>
+
+      <div class="auth-foot">Each account is private. Your objectives are yours alone.</div>
+    </div>
+  </div>
+
   <!-- ═══════════════════════════════════════════
        HEADER
   ═══════════════════════════════════════════ -->
-  <header class="app-header" role="banner">
+  <header class="app-header" id="app-header" role="banner" hidden>
     <div class="header-brand">EYPH</div>
- 
+
     <div class="view-toggle" role="group" aria-label="Switch view">
       <button class="view-btn active" id="btn-view-focus" data-view="focus">⚡ FOCUS</button>
       <button class="view-btn" id="btn-view-dashboard" data-view="dashboard">◎ DASHBOARD</button>
     </div>
- 
+
     <div class="header-clock" id="clock" aria-live="polite">00:00:00</div>
- 
+
     <nav class="header-actions" aria-label="Primary actions">
       <div class="sync-status" id="sync-status" title="Database sync status">
         <span class="sync-dot" id="sync-dot"></span>
         <span class="sync-label" id="sync-label">CONNECTING</span>
       </div>
+      <span class="user-email" id="user-email" title="Signed in as"></span>
       <button class="btn btn-ghost" id="btn-export" title="Export to JSON">⬇ EXPORT</button>
       <button class="btn btn-ghost" id="btn-open-okr-modal">+ OKR</button>
       <button class="btn btn-accent" id="btn-open-kpi-modal">+ KPI</button>
+      <button class="btn btn-ghost btn-icon-only" id="btn-sign-out" title="Sign out">⏻</button>
     </nav>
   </header>
- 
+
   <!-- ═══════════════════════════════════════════
        FOCUS VIEW
   ═══════════════════════════════════════════ -->
-  <main class="workspace" id="view-focus" role="main">
+  <main class="workspace" id="view-focus" role="main" hidden>
     <aside class="sidebar" aria-label="OKR and KPI list">
       <div class="sidebar-header">
         <span class="sidebar-title">ACTIVE OKRs</span>
         <button class="btn btn-ghost btn-sm" id="btn-open-focus-modal">⚡ CHANGE FOCUS</button>
       </div>
       <div class="sidebar-list" id="okr-list" role="list"></div>
- 
-      <!-- Completed OKRs archive -->
+
       <div class="sidebar-completed" id="sidebar-completed" hidden>
         <button class="completed-toggle" id="btn-toggle-completed" aria-expanded="false">
           <span class="completed-toggle-label">◉ COMPLETED</span>
@@ -53,21 +104,21 @@
         <div class="completed-list" id="completed-list" hidden></div>
       </div>
     </aside>
- 
+
     <section class="focus-panel" id="focus-panel" aria-label="Active KPI focus panel"></section>
   </main>
- 
+
   <!-- ═══════════════════════════════════════════
        DASHBOARD VIEW
   ═══════════════════════════════════════════ -->
   <main class="dashboard" id="view-dashboard" role="main" hidden>
     <div class="dashboard-inner" id="dashboard-inner"></div>
   </main>
- 
+
   <!-- ═══════════════════════════════════════════
        MODALS
   ═══════════════════════════════════════════ -->
- 
+
   <!-- Create OKR -->
   <div class="modal-overlay" id="modal-okr" role="dialog" aria-modal="true" aria-labelledby="modal-okr-title" hidden>
     <div class="modal-box">
@@ -93,7 +144,7 @@
       </form>
     </div>
   </div>
- 
+
   <!-- Create KPI -->
   <div class="modal-overlay" id="modal-kpi" role="dialog" aria-modal="true" aria-labelledby="modal-kpi-title" hidden>
     <div class="modal-box">
@@ -134,7 +185,7 @@
       </form>
     </div>
   </div>
- 
+
   <!-- Change Focus -->
   <div class="modal-overlay" id="modal-focus" role="dialog" aria-modal="true" aria-labelledby="modal-focus-title" hidden>
     <div class="modal-box">
@@ -148,7 +199,7 @@
       </div>
     </div>
   </div>
- 
+
   <!-- Add Task -->
   <div class="modal-overlay" id="modal-task" role="dialog" aria-modal="true" aria-labelledby="modal-task-title" hidden>
     <div class="modal-box">
@@ -173,7 +224,7 @@
       </form>
     </div>
   </div>
- 
+
   <!-- Rename -->
   <div class="modal-overlay" id="modal-rename" role="dialog" aria-modal="true" aria-labelledby="modal-rename-title" hidden>
     <div class="modal-box modal-box--sm">
@@ -194,7 +245,7 @@
       </form>
     </div>
   </div>
- 
+
   <!-- Confirm Delete -->
   <div class="modal-overlay" id="modal-confirm" role="dialog" aria-modal="true" aria-labelledby="modal-confirm-title" hidden>
     <div class="modal-box modal-box--sm">
@@ -208,7 +259,7 @@
       </div>
     </div>
   </div>
- 
+
   <script src="script.js"></script>
 </body>
 </html>

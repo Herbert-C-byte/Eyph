@@ -1,42 +1,139 @@
 /* ═══════════════════════════════════════════════
-   EYPH — Earn Your Phase  |  script.js  v5
-   + Velocity indicator · Ghost ring · Completed OKR archive
+   EYPH — Earn Your Phase  |  script.js  v6
+   + Supabase Auth · Multi-tenant data ownership
 ═══════════════════════════════════════════════ */
- 
+
 const APP = (() => {
   'use strict';
- 
+
   /* ══════════════════════════════════════════════
      CONFIG
   ══════════════════════════════════════════════ */
   const SUPABASE_URL = 'https://uzbdwuorvivmvradsnlz.supabase.co';
   const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6YmR3dW9ydml2bXZyYWRzbmx6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyNTQ1NTEsImV4cCI6MjA5MDgzMDU1MX0.yseg5uKtSqQrc4Pf76hzb_Zw2KFjWguWlJ1HKAg2huo';
-  const HEADERS = {
-    'Content-Type':  'application/json',
-    'apikey':        SUPABASE_KEY,
-    'Authorization': `Bearer ${SUPABASE_KEY}`,
-    'Prefer':        'return=representation'
-  };
- 
+  const SESSION_KEY = 'eyph_session_v1';
+
   /* ══════════════════════════════════════════════
      STATE
   ══════════════════════════════════════════════ */
   let state = { okrs: [], focusKpiId: null };
   let currentView = 'focus';
   let completedOpen = false;
- 
+  let session = null;
+
+  /* ══════════════════════════════════════════════
+     AUTH — SESSION STORAGE
+  ══════════════════════════════════════════════ */
+  function saveSession(s) {
+    session = s;
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+  }
+  function loadSessionFromStorage() {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function clearSession() {
+    session = null;
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  }
+  function isSessionFresh(s) {
+    return !!(s && s.access_token && s.expires_at && Date.now() < s.expires_at - 5000);
+  }
+  function buildSessionFromAuthResponse(data) {
+    return {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_at: Date.now() + (data.expires_in * 1000),
+      user: { id: data.user.id, email: data.user.email }
+    };
+  }
+
+  /* ══════════════════════════════════════════════
+     AUTH — REST CALLS
+  ══════════════════════════════════════════════ */
+  async function authFetch(path, body) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error_description || data.msg || data.error || 'Request failed.');
+    }
+    return data;
+  }
+
+  async function signUp(email, password) {
+    const data = await authFetch('signup', { email, password });
+    if (data.access_token) return { session: buildSessionFromAuthResponse(data), needsConfirmation: false };
+    return { session: null, needsConfirmation: true };
+  }
+
+  async function signIn(email, password) {
+    const data = await authFetch('token?grant_type=password', { email, password });
+    return buildSessionFromAuthResponse(data);
+  }
+
+  async function refreshSession(s) {
+    try {
+      const data = await authFetch('token?grant_type=refresh_token', { refresh_token: s.refresh_token });
+      return buildSessionFromAuthResponse(data);
+    } catch (e) { return null; }
+  }
+
+  async function ensureValidSession(s) {
+    if (!s) return null;
+    if (isSessionFresh(s)) return s;
+    const refreshed = await refreshSession(s);
+    if (refreshed) saveSession(refreshed);
+    return refreshed;
+  }
+
+  async function signOut() {
+    if (session?.access_token) {
+      try {
+        await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+          method: 'POST',
+          headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${session.access_token}` }
+        });
+      } catch (e) {}
+    }
+    clearSession();
+    state = { okrs: [], focusKpiId: null };
+    showAuthScreen();
+  }
+
   /* ══════════════════════════════════════════════
      DB LAYER
   ══════════════════════════════════════════════ */
-  async function dbQuery(path, options = {}) {
+  async function dbQuery(path, options = {}, _retried = false) {
+    const token = session?.access_token || SUPABASE_KEY;
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-      ...options, headers: { ...HEADERS, ...(options.headers || {}) }
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${token}`,
+        Prefer: 'return=representation',
+        ...(options.headers || {})
+      }
     });
+
+    if (res.status === 401 && !_retried && session) {
+      const refreshed = await ensureValidSession(session);
+      if (refreshed) return dbQuery(path, options, true);
+      await signOut();
+      throw new Error('Session expired. Please sign in again.');
+    }
+
     if (!res.ok) throw new Error(`DB [${res.status}]: ${await res.text()}`);
     if (res.status === 204) return null;
     return res.json();
   }
- 
+
   async function dbLoadAll() {
     const [okrs, kpis, tasks, settings] = await Promise.all([
       dbQuery('okrs?select=*&order=created_at.asc'),
@@ -53,7 +150,7 @@ const APP = (() => {
     const f = settings.find(s => s.key === 'focus_kpi_id');
     state.focusKpiId = f?.value || null;
   }
- 
+
   /* ══════════════════════════════════════════════
      SYNC STATUS
   ══════════════════════════════════════════════ */
@@ -64,7 +161,7 @@ const APP = (() => {
     dot.className = `sync-dot sync-dot--${s}`;
     lbl.textContent = { connecting:'CONNECTING', synced:'SYNCED', saving:'SAVING...', error:'OFFLINE' }[s] || s.toUpperCase();
   }
- 
+
   /* ══════════════════════════════════════════════
      UTILS
   ══════════════════════════════════════════════ */
@@ -115,143 +212,99 @@ const APP = (() => {
   function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
- 
+
   /* ══════════════════════════════════════════════
      VELOCITY ENGINE
-     Calculates pace for hours-KPIs and projects
-     whether the target will be hit by deadline.
   ══════════════════════════════════════════════ */
   function calcVelocity(kpi, okr) {
     if (kpi.type !== 'hours') return null;
     if (kpi.progress <= 0)   return null;
- 
-    const createdAt  = new Date(kpi.created_at);
-    const now        = new Date();
-    const daysElapsed = Math.max(1, (now - createdAt) / 86400000);
-    const weeksElapsed = daysElapsed / 7;
-    const hrsPerWeek   = kpi.progress / weeksElapsed;
- 
-    const remaining    = kpi.target - kpi.progress;
-    const daysLeft     = daysUntil(okr.deadline);
- 
-    // Already done
-    if (kpi.progress >= kpi.target) {
-      return { type: 'done', hrsPerWeek };
-    }
- 
-    // No time left
-    if (daysLeft <= 0) {
-      return { type: 'danger', hrsPerWeek, projectedDate: null, daysOff: Math.abs(daysLeft) };
-    }
- 
-    const weeksLeft      = daysLeft / 7;
-    const hrsNeededPerWk = remaining / weeksLeft;
-    const projectedDays  = remaining / (hrsPerWeek / 7); // days to finish at current pace
-    const projectedDate  = new Date(now.getTime() + projectedDays * 86400000);
-    const daysEarly      = daysLeft - projectedDays;
- 
+
+    const createdAt    = new Date(kpi.created_at);
+    const now           = new Date();
+    const daysElapsed   = Math.max(1, (now - createdAt) / 86400000);
+    const weeksElapsed  = daysElapsed / 7;
+    const hrsPerWeek    = kpi.progress / weeksElapsed;
+    const remaining     = kpi.target - kpi.progress;
+    const daysLeft       = daysUntil(okr.deadline);
+
+    if (kpi.progress >= kpi.target) return { type: 'done', hrsPerWeek };
+    if (daysLeft <= 0) return { type: 'danger', hrsPerWeek, projectedDate: null, daysOff: Math.abs(daysLeft) };
+
+    const weeksLeft       = daysLeft / 7;
+    const hrsNeededPerWk  = remaining / weeksLeft;
+    const projectedDays   = remaining / (hrsPerWeek / 7);
+    const projectedDate   = new Date(now.getTime() + projectedDays * 86400000);
+    const daysEarly        = daysLeft - projectedDays;
+
     let type;
-    if (daysEarly >= 7)        type = 'ahead';
-    else if (daysEarly >= 0)   type = 'ahead';  // barely ahead = still green
+    if (daysEarly >= 0)        type = 'ahead';
     else if (daysEarly >= -14) type = 'behind';
     else                       type = 'danger';
- 
+
     return { type, hrsPerWeek, hrsNeededPerWk, projectedDate, daysEarly: Math.round(daysEarly) };
   }
- 
+
   function renderVelocity(kpi, okr) {
     const v = calcVelocity(kpi, okr);
     if (!v) return '';
- 
     const paceStr = `${v.hrsPerWeek.toFixed(1)}H/WK`;
- 
+
     if (v.type === 'done') {
-      return `<div class="velocity-bar vel-done">
-        <span class="vel-icon">◉</span>
-        <span class="vel-text">TARGET REACHED · <span class="vel-pace">${paceStr} AVG</span></span>
-      </div>`;
+      return `<div class="velocity-bar vel-done"><span class="vel-icon">◉</span>
+        <span class="vel-text">TARGET REACHED · <span class="vel-pace">${paceStr} AVG</span></span></div>`;
     }
- 
     if (v.type === 'danger' && !v.projectedDate) {
-      return `<div class="velocity-bar vel-danger">
-        <span class="vel-icon">▲</span>
-        <span class="vel-text">DEADLINE PASSED · <span class="vel-pace">${paceStr} AVG</span></span>
-      </div>`;
+      return `<div class="velocity-bar vel-danger"><span class="vel-icon">▲</span>
+        <span class="vel-text">DEADLINE PASSED · <span class="vel-pace">${paceStr} AVG</span></span></div>`;
     }
- 
+
     const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-    const pd     = v.projectedDate;
-    const pdStr  = `${String(pd.getDate()).padStart(2,'0')} ${months[pd.getMonth()]}`;
- 
+    const pd = v.projectedDate;
+    const pdStr = `${String(pd.getDate()).padStart(2,'0')} ${months[pd.getMonth()]}`;
+
     if (v.type === 'ahead') {
-      const label = v.daysEarly > 0
-        ? `ON TRACK · FINISH ~${pdStr} · ${Math.abs(v.daysEarly)}D EARLY`
-        : `ON TRACK · FINISH ~${pdStr}`;
-      return `<div class="velocity-bar vel-ahead">
-        <span class="vel-icon">▲</span>
-        <span class="vel-text">${label} · <span class="vel-pace">${paceStr}</span></span>
-      </div>`;
+      const label = v.daysEarly > 0 ? `ON TRACK · FINISH ~${pdStr} · ${Math.abs(v.daysEarly)}D EARLY` : `ON TRACK · FINISH ~${pdStr}`;
+      return `<div class="velocity-bar vel-ahead"><span class="vel-icon">▲</span>
+        <span class="vel-text">${label} · <span class="vel-pace">${paceStr}</span></span></div>`;
     }
- 
     if (v.type === 'behind') {
-      const gap = Math.abs(v.daysEarly);
-      return `<div class="velocity-bar vel-behind">
-        <span class="vel-icon">▼</span>
-        <span class="vel-text">BEHIND · FINISH ~${pdStr} · ${gap}D LATE · NEED <span class="vel-pace">${v.hrsNeededPerWk.toFixed(1)}H/WK</span></span>
-      </div>`;
+      return `<div class="velocity-bar vel-behind"><span class="vel-icon">▼</span>
+        <span class="vel-text">BEHIND · FINISH ~${pdStr} · ${Math.abs(v.daysEarly)}D LATE · NEED <span class="vel-pace">${v.hrsNeededPerWk.toFixed(1)}H/WK</span></span></div>`;
     }
- 
-    return `<div class="velocity-bar vel-danger">
-      <span class="vel-icon">▼</span>
-      <span class="vel-text">OFF PACE · FINISH ~${pdStr} · NEED <span class="vel-pace">${v.hrsNeededPerWk.toFixed(1)}H/WK</span></span>
-    </div>`;
+    return `<div class="velocity-bar vel-danger"><span class="vel-icon">▼</span>
+      <span class="vel-text">OFF PACE · FINISH ~${pdStr} · NEED <span class="vel-pace">${v.hrsNeededPerWk.toFixed(1)}H/WK</span></span></div>`;
   }
- 
+
   /* ══════════════════════════════════════════════
-     GHOST RING — injected into focus panel
+     GHOST RING
   ══════════════════════════════════════════════ */
   function injectGhostRing(pct) {
-    // Remove existing
     document.querySelector('.focus-ghost-ring')?.remove();
- 
-    const panel  = document.getElementById('focus-panel');
+    const panel = document.getElementById('focus-panel');
     if (!panel) return;
- 
-    const size   = Math.min(panel.offsetWidth, panel.offsetHeight) * 1.1;
-    const sw     = Math.max(18, size * 0.045);
-    const r      = (size - sw) / 2;
-    const circ   = 2 * Math.PI * r;
-    const dash   = (pct / 100) * circ;
-    const cx     = size / 2;
-    const cls    = pct >= 100 ? 'gf-complete' : 'gf-progress';
- 
+    const size = Math.min(panel.offsetWidth, panel.offsetHeight) * 1.1;
+    const sw   = Math.max(18, size * 0.045);
+    const r    = (size - sw) / 2;
+    const circ = 2 * Math.PI * r;
+    const dash = (pct / 100) * circ;
+    const cx   = size / 2;
+    const cls  = pct >= 100 ? 'gf-complete' : 'gf-progress';
+
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.classList.add('focus-ghost-ring');
-    svg.setAttribute('width',   size);
-    svg.setAttribute('height',  size);
+    svg.setAttribute('width', size);
+    svg.setAttribute('height', size);
     svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
     svg.setAttribute('aria-hidden', 'true');
- 
-    // Position centered in panel
-    svg.style.cssText = `
-      position:absolute;
-      top:50%; left:50%;
-      transform:translate(-50%,-50%);
-      pointer-events:none;
-      z-index:0;
-    `;
- 
+    svg.style.cssText = `position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:0;`;
     svg.innerHTML = `
-      <circle class="ghost-track" cx="${cx}" cy="${cx}" r="${r}"
-        fill="none" stroke-width="${sw}"/>
-      <circle class="ghost-fill ${cls}" cx="${cx}" cy="${cx}" r="${r}"
-        fill="none" stroke-width="${sw}"
-        stroke-dasharray="${dash} ${circ}"
-        transform="rotate(-90 ${cx} ${cx})"/>`;
- 
+      <circle class="ghost-track" cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke-width="${sw}"/>
+      <circle class="ghost-fill ${cls}" cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke-width="${sw}"
+        stroke-dasharray="${dash} ${circ}" transform="rotate(-90 ${cx} ${cx})"/>`;
     panel.appendChild(svg);
   }
- 
+
   /* ══════════════════════════════════════════════
      CLOCK
   ══════════════════════════════════════════════ */
@@ -260,10 +313,24 @@ const APP = (() => {
     const tick = () => { const n=new Date(); el.textContent=[n.getHours(),n.getMinutes(),n.getSeconds()].map(v=>String(v).padStart(2,'0')).join(':'); };
     tick(); setInterval(tick, 1000);
   }
- 
+
   /* ══════════════════════════════════════════════
-     VIEW SWITCHER
+     SCREEN SWITCHING
   ══════════════════════════════════════════════ */
+  function showAuthScreen() {
+    document.getElementById('auth-screen').hidden = false;
+    document.getElementById('app-header').hidden = true;
+    document.getElementById('view-focus').hidden = true;
+    document.getElementById('view-dashboard').hidden = true;
+  }
+  function showApp() {
+    document.getElementById('auth-screen').hidden = true;
+    document.getElementById('app-header').hidden = false;
+    const emailEl = document.getElementById('user-email');
+    if (emailEl) emailEl.textContent = session?.user?.email || '';
+    switchView('focus');
+  }
+
   function switchView(view) {
     currentView = view;
     document.getElementById('view-focus').hidden     = (view !== 'focus');
@@ -272,15 +339,15 @@ const APP = (() => {
     document.getElementById('btn-view-dashboard').classList.toggle('active', view === 'dashboard');
     if (view === 'dashboard') renderDashboard();
   }
- 
+
   /* ══════════════════════════════════════════════
-     RENDER — SIDEBAR (active OKRs only)
+     RENDER — SIDEBAR
   ══════════════════════════════════════════════ */
   function renderSidebar() {
     const list   = document.getElementById('okr-list');
     const active = state.okrs.filter(o => !o.completed);
     const done   = state.okrs.filter(o => o.completed);
- 
+
     if (!active.length) {
       list.innerHTML = `<div class="sidebar-empty">${done.length ? 'All objectives completed.' : 'No OKRs yet.<br/>Click "+ OKR" to begin.'}</div>`;
     } else {
@@ -296,7 +363,7 @@ const APP = (() => {
             <button class="btn-icon" data-action="delete-kpi" data-kpi-id="${kpi.id}" data-okr-id="${okr.id}">✕</button>
           </div>`;
         }).join('');
- 
+
         return `<div class="okr-item" role="listitem" data-okr-id="${okr.id}">
           <div class="okr-row">
             ${ringsvg(okrPercent(okr))}
@@ -313,16 +380,14 @@ const APP = (() => {
         </div>`;
       }).join('');
     }
- 
-    // Completed archive
+
     const section       = document.getElementById('sidebar-completed');
     const completedList = document.getElementById('completed-list');
-    const countEl       = document.getElementById('completed-count');
- 
+    const countEl        = document.getElementById('completed-count');
+
     if (done.length) {
       section.removeAttribute('hidden');
       countEl.textContent = done.length;
- 
       completedList.innerHTML = done.map(okr => {
         const completedDate = okr.completed_at ? formatDate(okr.completed_at.slice(0,10)) : '';
         return `<div class="completed-okr-row" data-okr-id="${okr.id}">
@@ -339,34 +404,31 @@ const APP = (() => {
       section.setAttribute('hidden', '');
     }
   }
- 
+
   /* ══════════════════════════════════════════════
      RENDER — FOCUS PANEL
   ══════════════════════════════════════════════ */
   function renderFocusPanel() {
     const panel = document.getElementById('focus-panel');
- 
     if (!state.focusKpiId) {
       panel.innerHTML = `<div class="focus-empty"><div class="focus-empty-label">NO TARGET LOCKED</div><div class="focus-empty-sub">Select a KPI to begin execution.</div></div>`;
       document.querySelector('.focus-ghost-ring')?.remove();
       return;
     }
- 
     const found = findKpi(state.focusKpiId);
     if (!found) { state.focusKpiId = null; renderFocusPanel(); return; }
- 
+
     const { okr, kpi } = found;
     const days = daysUntil(okr.deadline);
     const pct  = kpiPercent(kpi);
     const pctComplete = pct >= 100;
- 
+
     let actionHtml;
     if (kpi.type === 'hours') {
       actionHtml = `<div class="focus-action">
         <div class="action-header"><span class="action-label">LOG HOURS</span></div>
         <div class="hours-form">
-          <input type="number" class="hours-input" id="log-hours-input"
-                 placeholder="0.0" min="0.1" step="0.5" max="24"/>
+          <input type="number" class="hours-input" id="log-hours-input" placeholder="0.0" min="0.1" step="0.5" max="24"/>
           <button class="btn btn-accent" id="btn-log-hours">LOG HOURS</button>
         </div>
       </div>`;
@@ -395,9 +457,7 @@ const APP = (() => {
         <div class="task-list" id="task-list" role="list">${items}</div>
       </div>`;
     }
- 
-    const velocityHtml = renderVelocity(kpi, okr);
- 
+
     panel.innerHTML = `<div class="focus-content">
       <div class="focus-meta">
         <span class="meta-tag">${escHtml(okr.title)}</span>
@@ -412,15 +472,14 @@ const APP = (() => {
         <div class="progress-bar-wrap" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
           <div class="progress-bar-fill ${pctComplete?'complete':''}" style="width:${pct}%"></div>
         </div>
-        ${velocityHtml}
+        ${renderVelocity(kpi, okr)}
       </div>
       ${actionHtml}
     </div>`;
- 
-    // Inject ghost ring after DOM settles
+
     requestAnimationFrame(() => injectGhostRing(pct));
   }
- 
+
   /* ══════════════════════════════════════════════
      RENDER — DASHBOARD
   ══════════════════════════════════════════════ */
@@ -430,7 +489,7 @@ const APP = (() => {
       container.innerHTML = `<div class="sidebar-empty" style="padding:60px 0;font-size:14px">No data yet. Create an OKR to see your dashboard.</div>`;
       return;
     }
- 
+
     const allOkrs    = state.okrs;
     const activeOkrs = allOkrs.filter(o => !o.completed);
     const doneOkrs   = allOkrs.filter(o => o.completed);
@@ -438,7 +497,7 @@ const APP = (() => {
     const totalHours = allOkrs.reduce((a,o) => a + o.kpis.filter(k=>k.type==='hours').reduce((b,k)=>b+k.progress,0), 0);
     const totalTasks = allOkrs.reduce((a,o) => a + o.kpis.filter(k=>k.type==='tasks').reduce((b,k)=>b+k.tasks.filter(t=>t.done).length,0), 0);
     const overallPct = allOkrs.length ? Math.round(allOkrs.reduce((a,o)=>a+okrPercent(o),0)/allOkrs.length) : 0;
- 
+
     const macroHtml = `<div class="dash-macro">
       <div class="dash-stat">
         <div class="dash-stat-label">OVERALL PROGRESS</div>
@@ -461,12 +520,12 @@ const APP = (() => {
         <div class="dash-stat-sub">${activeOkrs.filter(o=>daysUntil(o.deadline)<0).length} overdue · ${doneOkrs.length} archived</div>
       </div>
     </div>`;
- 
+
     const okrCards = allOkrs.map(okr => {
       const days  = daysUntil(okr.deadline);
       const pct   = okrPercent(okr);
       const isDone = okr.completed;
- 
+
       const kpiListHtml = okr.kpis.length
         ? okr.kpis.map(kpi => {
             const p   = kpiPercent(kpi);
@@ -476,19 +535,15 @@ const APP = (() => {
                 <div class="dash-kpi-name" title="${escHtml(kpi.title)}">${escHtml(kpi.title)}</div>
                 <div class="dash-kpi-pct">${p}%</div>
               </div>
-              <div class="dash-kpi-bar-wrap">
-                <div class="dash-kpi-bar-fill ${cls}" style="width:${p}%"></div>
-              </div>
+              <div class="dash-kpi-bar-wrap"><div class="dash-kpi-bar-fill ${cls}" style="width:${p}%"></div></div>
               <div class="dash-kpi-detail">${kpiDetail(kpi)}</div>
             </div>`;
           }).join('')
         : `<div class="dash-kpi-empty">No KPIs yet</div>`;
- 
-      const deadlineLabel = isDone
-        ? `COMPLETED ${okr.completed_at ? formatDate(okr.completed_at.slice(0,10)) : ''}`
-        : `${formatDate(okr.deadline)} · ${urgencyLabel(days)}`;
-      const deadlineCls = isDone ? 'done' : urgencyClass(days);
- 
+
+      const deadlineLabel = isDone ? `COMPLETED ${okr.completed_at ? formatDate(okr.completed_at.slice(0,10)) : ''}` : `${formatDate(okr.deadline)} · ${urgencyLabel(days)}`;
+      const deadlineCls   = isDone ? 'done' : urgencyClass(days);
+
       return `<div class="dash-okr-card ${isDone?'is-complete':''}">
         <div class="dash-okr-head">
           <div class="dash-okr-ring">${ringsvg(pct, 52, 4)}</div>
@@ -500,7 +555,7 @@ const APP = (() => {
         <div class="dash-kpi-list">${kpiListHtml}</div>
       </div>`;
     }).join('');
- 
+
     container.innerHTML = `
       ${macroHtml}
       <div class="dash-year-section">
@@ -512,13 +567,13 @@ const APP = (() => {
         <div class="dash-okr-grid">${okrCards}</div>
       </div>`;
   }
- 
+
   function buildBarChart() {
     if (!state.okrs.length) return '';
     const rowH=36, labelW=180, barW=360, padX=16, padY=12;
     const totalH = state.okrs.length * rowH + padY * 2;
     const totalW = labelW + barW + 56 + padX * 2;
- 
+
     const rows = state.okrs.map((okr, i) => {
       const pct   = okrPercent(okr);
       const y     = padY + i * rowH + rowH / 2;
@@ -534,11 +589,11 @@ const APP = (() => {
         <text x="${padX+labelW+barW+10}" y="${y+5}" font-size="11" font-family="var(--font-mono)" font-weight="700"
           fill="${pct>=100?'var(--green)':'var(--text-pri)'}">${pct}%</text>`;
     }).join('');
- 
+
     return `<svg viewBox="0 0 ${totalW} ${totalH}" xmlns="http://www.w3.org/2000/svg"
       style="width:100%;max-width:${totalW}px;display:block;overflow:visible">${rows}</svg>`;
   }
- 
+
   /* ══════════════════════════════════════════════
      MASTER RENDER
   ══════════════════════════════════════════════ */
@@ -547,7 +602,7 @@ const APP = (() => {
     renderFocusPanel();
     if (currentView === 'dashboard') renderDashboard();
   }
- 
+
   /* ══════════════════════════════════════════════
      LOADING OVERLAY
   ══════════════════════════════════════════════ */
@@ -559,7 +614,7 @@ const APP = (() => {
       document.body.appendChild(ov);
     } else if (!show && ov) ov.remove();
   }
- 
+
   /* ══════════════════════════════════════════════
      MODAL SYSTEM
   ══════════════════════════════════════════════ */
@@ -595,13 +650,13 @@ const APP = (() => {
         <div class="focus-select-okr">${escHtml(okr.title)}</div>
       </div>`).join('');
   }
- 
+
   /* ══════════════════════════════════════════════
      CONFIRM + RENAME
   ══════════════════════════════════════════════ */
   let _confirmCb=null;
   function showConfirm(msg,cb){document.getElementById('confirm-message').textContent=msg;_confirmCb=cb;openModal('modal-confirm');}
- 
+
   let _renameCb=null;
   function openRename(label,current,onSave){
     document.getElementById('modal-rename-title').textContent=`RENAME ${label}`;
@@ -610,7 +665,7 @@ const APP = (() => {
     inp.value=current; _renameCb=onSave; clearFormErrors();
     openModal('modal-rename'); setTimeout(()=>inp.select(),60);
   }
- 
+
   /* ══════════════════════════════════════════════
      EXPORT
   ══════════════════════════════════════════════ */
@@ -625,13 +680,13 @@ const APP = (() => {
     a.download=`eyph-export-${new Date().toISOString().slice(0,10)}.json`;a.click();
     URL.revokeObjectURL(a.href);
   }
- 
+
   /* ══════════════════════════════════════════════
      CRUD — OKR
   ══════════════════════════════════════════════ */
   async function createOkr(title,deadline){
     setSyncStatus('saving');
-    try{const[row]=await dbQuery('okrs',{method:'POST',body:JSON.stringify({title:title.trim(),deadline,completed:false})});
+    try{const[row]=await dbQuery('okrs',{method:'POST',body:JSON.stringify({title:title.trim(),deadline,completed:false,user_id:session.user.id})});
     state.okrs.push({...row,kpis:[]});render();setSyncStatus('synced');}
     catch(e){console.error(e);setSyncStatus('error');}
   }
@@ -657,7 +712,6 @@ const APP = (() => {
       await dbQuery(`okrs?id=eq.${okrId}`,{method:'PATCH',body:JSON.stringify({completed:true,completed_at:now})});
       const okr=state.okrs.find(o=>o.id===okrId);
       if(okr){okr.completed=true;okr.completed_at=now;}
-      // Clear focus if it belonged to this OKR
       if(okr?.kpis.some(k=>k.id===state.focusKpiId)){state.focusKpiId=null;await saveFocus(null);}
       render();setSyncStatus('synced');
     }catch(e){console.error(e);setSyncStatus('error');}
@@ -671,13 +725,13 @@ const APP = (() => {
       render();setSyncStatus('synced');
     }catch(e){console.error(e);setSyncStatus('error');}
   }
- 
+
   /* ══════════════════════════════════════════════
      CRUD — KPI
   ══════════════════════════════════════════════ */
   async function createKpi(okrId,title,type,target){
     setSyncStatus('saving');
-    try{const[row]=await dbQuery('kpis',{method:'POST',body:JSON.stringify({okr_id:okrId,title:title.trim(),type,target:type==='hours'?Number(target):0,progress:0})});
+    try{const[row]=await dbQuery('kpis',{method:'POST',body:JSON.stringify({okr_id:okrId,title:title.trim(),type,target:type==='hours'?Number(target):0,progress:0,user_id:session.user.id})});
     const okr=state.okrs.find(o=>o.id===okrId);if(okr)okr.kpis.push({...row,tasks:[]});
     if(!state.focusKpiId){state.focusKpiId=row.id;await saveFocus(row.id);}
     render();setSyncStatus('synced');}catch(e){console.error(e);setSyncStatus('error');}
@@ -695,7 +749,7 @@ const APP = (() => {
     const f=findKpi(id);if(f)f.kpi.title=title;render();setSyncStatus('synced');}
     catch(e){console.error(e);setSyncStatus('error');}
   }
- 
+
   /* ══════════════════════════════════════════════
      CRUD — HOURS
   ══════════════════════════════════════════════ */
@@ -706,14 +760,14 @@ const APP = (() => {
     await dbQuery(`kpis?id=eq.${f.kpi.id}`,{method:'PATCH',body:JSON.stringify({progress:p})});
     f.kpi.progress=p;render();setSyncStatus('synced');}catch(e){console.error(e);setSyncStatus('error');}
   }
- 
+
   /* ══════════════════════════════════════════════
      CRUD — TASKS
   ══════════════════════════════════════════════ */
   async function addTask(title,description){
     const f=findKpi(state.focusKpiId);if(!f||f.kpi.type!=='tasks')return;
     setSyncStatus('saving');
-    try{const[row]=await dbQuery('tasks',{method:'POST',body:JSON.stringify({kpi_id:f.kpi.id,title:title.trim(),description:description||'',done:false})});
+    try{const[row]=await dbQuery('tasks',{method:'POST',body:JSON.stringify({kpi_id:f.kpi.id,title:title.trim(),description:description||'',done:false,user_id:session.user.id})});
     f.kpi.tasks.push(row);render();setSyncStatus('synced');}catch(e){console.error(e);setSyncStatus('error');}
   }
   async function toggleTask(taskId){
@@ -742,19 +796,25 @@ const APP = (() => {
     await dbQuery(`kpis?id=eq.${f.kpi.id}`,{method:'PATCH',body:JSON.stringify({progress:f.kpi.progress})});
     render();setSyncStatus('synced');}catch(e){console.error(e);setSyncStatus('error');}
   }
- 
+
   /* ══════════════════════════════════════════════
      FOCUS
   ══════════════════════════════════════════════ */
-  async function saveFocus(kpiId){await dbQuery(`app_settings?key=eq.focus_kpi_id`,{method:'PATCH',body:JSON.stringify({value:kpiId})});}
+  async function saveFocus(kpiId){
+    await dbQuery(`app_settings?on_conflict=user_id,key`,{
+      method:'POST',
+      headers:{ Prefer:'resolution=merge-duplicates,return=representation' },
+      body:JSON.stringify({ user_id: session.user.id, key:'focus_kpi_id', value:kpiId })
+    });
+  }
   async function setFocus(kpiId){
     setSyncStatus('saving');
     try{state.focusKpiId=kpiId;await saveFocus(kpiId);render();setSyncStatus('synced');}
     catch(e){console.error(e);setSyncStatus('error');}
   }
- 
+
   /* ══════════════════════════════════════════════
-     FORM HANDLERS
+     FORM HANDLERS — app data
   ══════════════════════════════════════════════ */
   async function handleOkrSubmit(e){
     e.preventDefault();clearFormErrors();
@@ -793,16 +853,83 @@ const APP = (() => {
     document.getElementById('form-task').reset();closeModal('modal-task');
     await addTask(title,desc);
   }
- 
+
+  /* ══════════════════════════════════════════════
+     FORM HANDLERS — auth
+  ══════════════════════════════════════════════ */
+  async function handleSignInSubmit(e){
+    e.preventDefault();
+    const errEl = document.getElementById('signin-error');
+    errEl.textContent = '';
+    const email = document.getElementById('signin-email').value.trim();
+    const password = document.getElementById('signin-password').value;
+    const btn = document.getElementById('btn-signin');
+    btn.classList.add('loading');
+    try {
+      const s = await signIn(email, password);
+      saveSession(s);
+      await bootApp();
+    } catch (err) {
+      errEl.textContent = err.message;
+    } finally {
+      btn.classList.remove('loading');
+    }
+  }
+
+  async function handleSignUpSubmit(e){
+    e.preventDefault();
+    const errEl = document.getElementById('signup-error');
+    const noticeEl = document.getElementById('signup-notice');
+    errEl.textContent = '';
+    noticeEl.hidden = true;
+    const email = document.getElementById('signup-email').value.trim();
+    const password = document.getElementById('signup-password').value;
+    const btn = document.getElementById('btn-signup');
+    btn.classList.add('loading');
+    try {
+      const { session: s, needsConfirmation } = await signUp(email, password);
+      if (needsConfirmation) {
+        noticeEl.textContent = 'Account created. Check your email to confirm, then sign in.';
+        noticeEl.hidden = false;
+        document.getElementById('form-signup').reset();
+      } else {
+        saveSession(s);
+        await bootApp();
+      }
+    } catch (err) {
+      errEl.textContent = err.message;
+    } finally {
+      btn.classList.remove('loading');
+    }
+  }
+
   /* ══════════════════════════════════════════════
      EVENTS
   ══════════════════════════════════════════════ */
+  function initAuthEvents(){
+    document.getElementById('tab-signin').addEventListener('click', () => {
+      document.getElementById('tab-signin').classList.add('active');
+      document.getElementById('tab-signup').classList.remove('active');
+      document.getElementById('form-signin').hidden = false;
+      document.getElementById('form-signup').hidden = true;
+    });
+    document.getElementById('tab-signup').addEventListener('click', () => {
+      document.getElementById('tab-signup').classList.add('active');
+      document.getElementById('tab-signin').classList.remove('active');
+      document.getElementById('form-signup').hidden = false;
+      document.getElementById('form-signin').hidden = true;
+    });
+    document.getElementById('form-signin').addEventListener('submit', handleSignInSubmit);
+    document.getElementById('form-signup').addEventListener('submit', handleSignUpSubmit);
+  }
+
   function initEvents(){
-    // View toggle
     document.getElementById('btn-view-focus').addEventListener('click',()=>switchView('focus'));
     document.getElementById('btn-view-dashboard').addEventListener('click',()=>switchView('dashboard'));
- 
-    // Header
+    document.getElementById('btn-sign-out').addEventListener('click', () => {
+      showConfirm('Sign out of EYPH?', () => signOut());
+    });
+
     document.getElementById('btn-open-okr-modal').addEventListener('click',()=>{clearFormErrors();document.getElementById('form-okr').reset();openModal('modal-okr');});
     document.getElementById('btn-open-kpi-modal').addEventListener('click',()=>{
       if(!state.okrs.filter(o=>!o.completed).length){alert('Create at least one active OKR first.');return;}
@@ -814,8 +941,7 @@ const APP = (() => {
     });
     document.getElementById('btn-open-focus-modal').addEventListener('click',()=>{populateFocusModal();openModal('modal-focus');});
     document.getElementById('btn-export').addEventListener('click',exportData);
- 
-    // Forms
+
     document.getElementById('form-okr').addEventListener('submit',handleOkrSubmit);
     document.getElementById('form-kpi').addEventListener('submit',handleKpiSubmit);
     document.getElementById('form-task').addEventListener('submit',handleTaskSubmit);
@@ -825,8 +951,7 @@ const APP = (() => {
       if(!val){showError('rename-input','rename-error','Name cannot be empty.');return;}
       if(typeof _renameCb==='function'){closeModal('modal-rename');await _renameCb(val);_renameCb=null;}
     });
- 
-    // KPI type toggle
+
     document.querySelector('.type-toggle').addEventListener('click',e=>{
       const btn=e.target.closest('.type-btn');if(!btn)return;
       const type=btn.dataset.type;
@@ -834,8 +959,7 @@ const APP = (() => {
       document.querySelectorAll('.type-btn').forEach(b=>b.classList.toggle('active',b===btn));
       document.getElementById('kpi-target-group').style.display=type==='hours'?'':'none';
     });
- 
-    // Modal close
+
     document.body.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)closeModal(b.dataset.close);});
     document.querySelectorAll('.modal-overlay').forEach(ov=>ov.addEventListener('click',e=>{if(e.target===ov)closeModal(ov.id);}));
     document.addEventListener('keydown',e=>{
@@ -844,13 +968,11 @@ const APP = (() => {
         populateFocusModal();openModal('modal-focus');
       }
     });
- 
-    // Confirm
+
     document.getElementById('btn-confirm-delete').addEventListener('click',()=>{
       if(typeof _confirmCb==='function'){_confirmCb();_confirmCb=null;}closeModal('modal-confirm');
     });
- 
-    // Completed archive toggle
+
     document.getElementById('btn-toggle-completed').addEventListener('click',()=>{
       completedOpen=!completedOpen;
       const list=document.getElementById('completed-list');
@@ -860,8 +982,7 @@ const APP = (() => {
       chev.classList.toggle('open',completedOpen);
       btn.setAttribute('aria-expanded',completedOpen);
     });
- 
-    // Sidebar delegation
+
     document.getElementById('okr-list').addEventListener('click',e=>{
       const dOkr=e.target.closest('[data-action="delete-okr"]');
       if(dOkr){const o=state.okrs.find(o=>o.id===dOkr.dataset.okrId);if(o)showConfirm(`Delete OKR "${o.title}"? All KPIs will be removed.`,()=>deleteOkr(o.id));return;}
@@ -872,24 +993,19 @@ const APP = (() => {
       const kpiRow=e.target.closest('.kpi-row');
       if(kpiRow&&!e.target.closest('.btn-icon')&&!e.target.closest('[data-action]'))setFocus(kpiRow.dataset.kpiId);
     });
- 
-    // Completed list delegation (restore + delete)
     document.getElementById('completed-list').addEventListener('click',e=>{
       const restore=e.target.closest('[data-action="restore-okr"]');
       if(restore){restoreOkr(restore.dataset.okrId);return;}
       const del=e.target.closest('[data-action="delete-okr"]');
       if(del){const o=state.okrs.find(o=>o.id===del.dataset.okrId);if(o)showConfirm(`Permanently delete "${o.title}"?`,()=>deleteOkr(o.id));}
     });
- 
-    // Sidebar double-click rename
     document.getElementById('okr-list').addEventListener('dblclick',e=>{
       const rOkr=e.target.closest('[data-action="rename-okr"]');
       if(rOkr){const o=state.okrs.find(o=>o.id===rOkr.dataset.okrId);if(o)openRename('OKR',o.title,t=>renameOkr(o.id,t));return;}
       const rKpi=e.target.closest('[data-action="rename-kpi"]');
       if(rKpi){const f=findKpi(rKpi.dataset.kpiId);if(f)openRename('KPI',f.kpi.title,t=>renameKpi(f.kpi.id,t));}
     });
- 
-    // Focus panel
+
     document.getElementById('focus-panel').addEventListener('click',e=>{
       if(e.target.id==='btn-log-hours'){
         const inp=document.getElementById('log-hours-input'),val=parseFloat(inp.value);
@@ -907,33 +1023,47 @@ const APP = (() => {
       if(e.key==='Enter'&&e.target.id==='log-hours-input'){e.preventDefault();document.getElementById('btn-log-hours')?.click();}
       if((e.key==='Enter'||e.key===' ')&&e.target.closest('[data-action="toggle-task"]')){e.preventDefault();toggleTask(e.target.closest('[data-action="toggle-task"]').dataset.taskId);}
     });
- 
-    // Focus modal
+
     document.getElementById('focus-list').addEventListener('click',e=>{const i=e.target.closest('[data-action="set-focus"]');if(i){setFocus(i.dataset.kpiId);closeModal('modal-focus');}});
     document.getElementById('focus-list').addEventListener('keydown',e=>{
       if(e.key==='Enter'||e.key===' '){const i=e.target.closest('[data-action="set-focus"]');if(i){e.preventDefault();setFocus(i.dataset.kpiId);closeModal('modal-focus');}}
     });
- 
-    // Recompute ghost ring on window resize
+
     window.addEventListener('resize',()=>{
       if(state.focusKpiId){const f=findKpi(state.focusKpiId);if(f)injectGhostRing(kpiPercent(f.kpi));}
     });
   }
- 
+
   /* ══════════════════════════════════════════════
-     INIT
+     BOOT SEQUENCE
   ══════════════════════════════════════════════ */
-  async function init(){
-    initClock();initEvents();
-    setSyncStatus('connecting');showLoading(true);
-    try{await dbLoadAll();setSyncStatus('synced');}
-    catch(e){console.error('EYPH init:',e);setSyncStatus('error');}
-    finally{showLoading(false);}
+  async function bootApp(){
+    showApp();
+    setSyncStatus('connecting'); showLoading(true);
+    try { await dbLoadAll(); setSyncStatus('synced'); }
+    catch(e) { console.error('EYPH load:', e); setSyncStatus('error'); }
+    finally { showLoading(false); }
     render();
   }
- 
-  return{init};
+
+  async function init(){
+    initClock();
+    initAuthEvents();
+    initEvents();
+
+    const stored = loadSessionFromStorage();
+    const valid = await ensureValidSession(stored);
+
+    if (valid) {
+      session = valid;
+      await bootApp();
+    } else {
+      clearSession();
+      showAuthScreen();
+    }
+  }
+
+  return { init };
 })();
- 
-document.addEventListener('DOMContentLoaded',APP.init);
- 
+
+document.addEventListener('DOMContentLoaded', APP.init);
